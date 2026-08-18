@@ -282,11 +282,80 @@
   .log-text.success { color: #a7f3d0; }
   .log-text.error { color: #fca5a5; }
 
-  audio { width: 100%; height: 32px; margin-top: 6px; border-radius: 6px; }
-  .gen-img { max-width: 100%; max-height: 200px; border-radius: 8px; margin-top: 6px; border: 1px solid var(--border); }
+  /* QR Modal Overlay */
+  .qr-modal-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(8px);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+  }
+  .qr-modal-overlay.active { display: flex; }
+  .qr-modal-card {
+    background: var(--bg-card);
+    border: 1px solid rgba(59, 130, 246, 0.4);
+    box-shadow: 0 20px 50px rgba(0,0,0,0.8), 0 0 30px rgba(59, 130, 246, 0.2);
+    border-radius: 16px;
+    padding: 24px;
+    text-align: center;
+    max-width: 360px;
+    width: 90%;
+    animation: fadeIn 0.3s ease;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: scale(0.95); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  .qr-img-box {
+    background: #fff;
+    padding: 12px;
+    border-radius: 12px;
+    display: inline-block;
+    margin: 14px 0;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+  }
+  .qr-img-box img {
+    width: 220px;
+    height: 220px;
+    display: block;
+  }
+  .qr-steps {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    text-align: left;
+    background: var(--bg-subtle);
+    padding: 10px 14px;
+    border-radius: 8px;
+    margin-top: 12px;
+    line-height: 1.5;
+  }
 </style>
 </head>
 <body>
+
+<!-- QR Modal -->
+<div id="qr-modal" class="qr-modal-overlay">
+  <div class="qr-modal-card">
+    <h3 style="font-size:1.15rem; color:#fff; margin-bottom:4px;">📱 Link WhatsApp Bot</h3>
+    <p style="font-size:0.8rem; color:var(--text-muted);">Scan this QR Code from your WhatsApp</p>
+    
+    <div class="qr-img-box">
+      <img id="qr-img" src="" alt="WhatsApp QR Code">
+    </div>
+    
+    <div class="qr-steps">
+      <b>Steps to Connect:</b><br>
+      1. Open WhatsApp on phone<br>
+      2. Tap <b>Settings</b> / 3-dots → <b>Linked Devices</b><br>
+      3. Tap <b>Link a Device</b> & scan this QR Code
+    </div>
+
+    <button onclick="$('qr-modal').classList.remove('active')" style="margin-top:14px; background:rgba(255,255,255,0.1); border:1px solid var(--border); color:var(--text-muted); padding:6px 16px; border-radius:8px; font-size:0.75rem; cursor:pointer;">Dismiss</button>
+  </div>
+</div>
 
 <header class="header">
   <div class="brand">
@@ -409,6 +478,17 @@ function updateUI(s) {
         <span class="log-text ${l.type}">${l.msg}</span>
       </div>
     `).join('');
+  }
+
+  // QR Modal display
+  const qrModal = $('qr-modal');
+  if (qrModal) {
+    if (s.qrDataUrl && s.status !== 'connected') {
+      $('qr-img').src = s.qrDataUrl;
+      qrModal.classList.add('active');
+    } else if (s.status === 'connected') {
+      qrModal.classList.remove('active');
+    }
   }
 }
 

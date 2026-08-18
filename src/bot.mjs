@@ -586,6 +586,22 @@ app.get('/events', (req, res) => {
 
 app.get('/status', (_, res) => res.json(state));
 
+app.get('/qr', (_, res) => {
+  if (state.qrDataUrl) {
+    const base64Data = state.qrDataUrl.replace(/^data:image\/png;base64,/, '');
+    const img = Buffer.from(base64Data, 'base64');
+    res.writeHead(200, {
+      'Content-Type': 'image/png',
+      'Content-Length': img.length
+    });
+    res.end(img);
+  } else if (state.status === 'connected') {
+    res.send('<html><body style="background:#111; color:#fff; font-family:sans-serif; text-align:center; padding:50px;"><h2>✅ WhatsApp is already Connected!</h2><p>Aapka WhatsApp AI Bot successfully authenticate ho chuka hai.</p></body></html>');
+  } else {
+    res.send('<html><body style="background:#111; color:#fff; font-family:sans-serif; text-align:center; padding:50px;"><h2>⏳ Generating QR Code...</h2><p>Please refresh in 3 seconds.</p><script>setTimeout(()=>location.reload(),3000)</script></body></html>');
+  }
+});
+
 // ── Interactive Web Chat & AI Test Playground ────────────────────────────────
 app.post('/api/chat', async (req, res) => {
   try {
