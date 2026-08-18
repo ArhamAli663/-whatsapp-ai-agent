@@ -687,6 +687,11 @@ function createClient() {
   client = new Client({
     authStrategy: new LocalAuth({ dataPath: './wweb_session' }),
     takeoverOnConflict: true,
+    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+    webVersionCache: {
+      type: 'remote',
+      remotePath: 'https://raw.githubusercontent.com/wppconnect-team/wa-js/main/dist/wppconnect-wa.js'
+    },
     puppeteer: {
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || process.env.CHROME_BIN || 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
       headless: true,
@@ -696,7 +701,9 @@ function createClient() {
         '--disable-dev-shm-usage',
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
+        '--no-zygote',
         '--disable-gpu',
+        '--disable-blink-features=AutomationControlled',
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding'
