@@ -1,4 +1,9 @@
 .git
 node_modules
 wweb_session
+.wwebjs_cache
+session
 *.log
+*.mp3
+*.ogg
+*.wav
