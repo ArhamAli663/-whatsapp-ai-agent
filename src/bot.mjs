@@ -800,9 +800,14 @@ function createClient() {
           return;
         }
 
-        let userText = msg.body || '';
+        let userText = (msg.body || msg._data?.body || msg._data?.caption || msg.caption || '').trim();
         let isVoiceMessage = false;
         let isImageMessage = false;
+
+        if (!userText && !msg.hasMedia) {
+          log(`ℹ️ System/handshake packet from +${senderNumber} (${msg.type}) - waiting for actual message`, 'info');
+          return;
+        }
 
         log(`📩 Incoming message from +${senderNumber} (${senderName}): "${userText.substring(0, 60)}"`, 'info');
 
