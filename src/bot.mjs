@@ -647,6 +647,18 @@ app.post('/api/chat', async (req, res) => {
   }
 });
 
+app.post('/api/send-wa', async (req, res) => {
+  try {
+    const { to, message } = req.body;
+    if (!client) return res.status(500).json({ error: 'WhatsApp client not initialized' });
+    const target = to.includes('@') ? to : `${to.replace(/\D/g, '')}@c.us`;
+    await client.sendMessage(target, message || 'Hello from AI Bot!');
+    res.json({ ok: true });
+  } catch(e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.post('/new-code', async (req, res) => {
   try {
     if (client) {
@@ -730,13 +742,22 @@ function createClient() {
   let isBotReady = false;
   let readyTimestamp = Math.floor(Date.now() / 1000);
 
-  client.on('ready', () => {
+  client.on('ready', async () => {
     isBotReady = true;
     readyTimestamp = Math.floor(Date.now() / 1000);
     state.status = 'connected';
+    state.user = client.info?.wid?.user || PHONE;
     log(`✅ WhatsApp AI Ready! Voice + Text + Vision + Image Gen active for +${state.user}`, 'success');
+    try { await client.sendPresenceAvailable(); } catch(e){}
     broadcast();
   });
+
+  // Keepalive presence ping every 25s
+  setInterval(async () => {
+    if (client && isBotReady) {
+      try { await client.sendPresenceAvailable(); } catch(e){}
+    }
+  }, 25000);
 
   client.on('disconnected', (reason) => {
     isBotReady = false;
