@@ -691,7 +691,33 @@ app.post('/logout', async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+function cleanChromiumLocks(dir) {
+  try {
+    if (!fs.existsSync(dir)) return;
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      const fullPath = path.join(dir, entry.name);
+      try {
+        if (entry.isDirectory()) {
+          cleanChromiumLocks(fullPath);
+        } else if (
+          entry.name.startsWith('Singleton') ||
+          entry.name.includes('SingletonLock') ||
+          entry.name.includes('SingletonCookie') ||
+          entry.name.includes('SingletonSocket')
+        ) {
+          fs.unlinkSync(fullPath);
+          console.log(`[CLEANED] Stale Chromium lock: ${fullPath}`);
+        }
+      } catch(e){}
+    }
+  } catch(e){}
+}
+
 function createClient() {
+  cleanChromiumLocks(path.join(__dirname, '../wweb_session'));
+  cleanChromiumLocks('./wweb_session');
+
   log('Starting Multimodal WhatsApp AI Engine (Voice + Text + Vision + Image Gen)...');
   state.status = 'connecting';
   broadcast();
@@ -714,8 +740,11 @@ function createClient() {
         '--disable-accelerated-2d-canvas',
         '--no-first-run',
         '--no-zygote',
+        '--single-process',
         '--disable-gpu',
         '--disable-blink-features=AutomationControlled',
+        '--disable-features=IsolateOrigins,site-per-process',
+        '--disable-site-isolation-trials',
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding'
