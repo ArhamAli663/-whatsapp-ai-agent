@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WhatsApp Multimodal AI Agent — Live Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg-main: #0a0e17;
+    --bg-card: #111827;
+    --bg-subtle: #1c2638;
+    --primary: #3b82f6;
+    --primary-glow: rgba(59, 130, 246, 0.4);
+    --accent: #10b981;
+    --text-main: #f8fafc;
+    --text-muted: #94a3b8;
+    --border: #24324d;
+    --border-light: rgba(255, 255, 255, 0.08);
+  }
+  * { margin:0; padding:0; box-sizing:border-box; font-family:'Plus Jakarta Sans', sans-serif; }
+  body { background: var(--bg-main); color: var(--text-main); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+
+  /* Header */
+  .header {
+    background: rgba(17, 24, 39, 0.95);
+    backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--border);
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    z-index: 100;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; }
+  .brand-icon {
+    width: 36px; height: 36px;
+    background: linear-gradient(135deg, #2563eb, #3b82f6);
+    border-radius: 9px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 1.25rem;
+    box-shadow: 0 0 15px var(--primary-glow);
+  }
+  .brand-text h1 { font-size: 1.05rem; font-weight: 700; }
+  .brand-text span { font-size: 0.75rem; color: var(--text-muted); }
+
+  .header-actions { display: flex; align-items: center; gap: 10px; }
+  .status-badge {
+    padding: 5px 12px;
+    border-radius: 9999px;
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .status-badge::before { content:''; width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
+  .status-badge.connected { background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); }
+  .status-badge.connected::before { background: #34d399; box-shadow: 0 0 8px #34d399; }
+  .status-badge.disconnected, .status-badge.reconnecting { background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.3); }
+  .status-badge.disconnected::before, .status-badge.reconnecting::before { background: #f87171; }
+
+  /* Main Viewport Container */
+  .container {
+    max-width: 1440px;
+    width: 100%;
+    margin: 10px auto;
+    padding: 0 16px;
+    display: grid;
+    grid-template-columns: 1fr 450px;
+    gap: 14px;
+    flex: 1;
+    height: calc(100vh - 75px);
+    overflow: hidden;
+  }
+
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 14px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    border-bottom: 1px solid var(--border-light);
+    padding-bottom: 8px;
+    margin-bottom: 10px;
+  }
+  .card-title { font-size: 0.82rem; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: #94a3b8; }
+
+  /* Stats Bar */
+  .stats-bar {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 10px;
+    margin-bottom: 10px;
+  }
+  .stat-card {
+    background: var(--bg-subtle);
+    border-radius: 10px;
+    padding: 8px 12px;
+    border: 1px solid var(--border-light);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .stat-value { font-size: 1.15rem; font-weight: 800; color: #60a5fa; }
+  .stat-label { font-size: 0.65rem; color: var(--text-muted); text-transform: uppercase; font-weight: 600; }
+
+  /* Interactive Chat Layout */
+  .chat-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+  }
+  .chat-messages {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    background: rgba(15, 23, 42, 0.6);
+    border-radius: 12px;
+    border: 1px solid var(--border-light);
+  }
+  .chat-messages::-webkit-scrollbar { width: 5px; }
+  .chat-messages::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+
+  .msg-bubble {
+    max-width: 82%;
+    padding: 10px 14px;
+    border-radius: 12px;
+    font-size: 0.88rem;
+    line-height: 1.45;
+    position: relative;
+    word-break: break-word;
+    animation: fadeIn 0.2s ease-in-out;
+  }
+  @keyframes fadeIn { from { opacity:0; transform:translateY(4px); } to { opacity:1; transform:translateY(0); } }
+
+  .msg-bubble.user {
+    align-self: flex-end;
+    background: linear-gradient(135deg, #2563eb, #1d4ed8);
+    color: #fff;
+    border-bottom-right-radius: 3px;
+  }
+  .msg-bubble.assistant {
+    align-self: flex-start;
+    background: var(--bg-subtle);
+    border: 1px solid var(--border);
+    color: var(--text-main);
+    border-bottom-left-radius: 3px;
+  }
+  .msg-meta {
+    font-size: 0.68rem;
+    color: rgba(255, 255, 255, 0.6);
+    margin-top: 4px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .msg-bubble.assistant .msg-meta { color: var(--text-muted); }
+
+  /* Quick Chips */
+  .quick-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin: 8px 0;
+  }
+  .chip {
+    padding: 5px 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    font-size: 0.72rem;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: 0.2s;
+    user-select: none;
+  }
+  .chip:hover {
+    background: rgba(59, 130, 246, 0.2);
+    color: #93c5fd;
+    border-color: rgba(59, 130, 246, 0.4);
+  }
+
+  /* Input Controls */
+  .chat-input-box {
+    display: flex;
+    gap: 8px;
+    background: var(--bg-subtle);
+    padding: 6px;
+    border-radius: 12px;
+    border: 1px solid var(--border);
+  }
+  .chat-input-box input {
+    flex: 1;
+    background: transparent;
+    border: none;
+    outline: none;
+    color: #fff;
+    font-size: 0.88rem;
+    padding: 0 10px;
+  }
+  .chat-input-box input::placeholder { color: var(--text-muted); }
+
+  .chat-btn {
+    padding: 7px 16px;
+    border: none;
+    border-radius: 8px;
+    background: linear-gradient(135deg, #2563eb, #3b82f6);
+    color: #fff;
+    font-size: 0.84rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    white-space: nowrap;
+  }
+  .chat-btn:hover { transform: translateY(-1px); }
+  .chat-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  .voice-toggle-btn {
+    padding: 7px 12px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 0.78rem;
+    transition: 0.2s;
+    white-space: nowrap;
+  }
+  .voice-toggle-btn.active {
+    background: rgba(16, 185, 129, 0.2);
+    color: #34d399;
+    border-color: rgba(16, 185, 129, 0.4);
+  }
+
+  /* Right Logs Panel */
+  .log-wrap {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding-right: 4px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .log-wrap::-webkit-scrollbar { width: 5px; }
+  .log-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; }
+
+  .log-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 6px 10px;
+    background: var(--bg-subtle);
+    border-radius: 6px;
+    font-size: 0.74rem;
+    line-height: 1.4;
+    border-left: 3px solid transparent;
+  }
+  .log-item.info { border-left-color: #60a5fa; }
+  .log-item.success { border-left-color: #34d399; background: rgba(16, 185, 129, 0.08); }
+  .log-item.warn { border-left-color: #fbbf24; background: rgba(251, 191, 36, 0.08); }
+  .log-item.error { border-left-color: #f87171; background: rgba(239, 68, 68, 0.08); }
+
+  .log-time { font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: var(--text-muted); white-space: nowrap; }
+  .log-text { word-break: break-word; }
+  .log-text.success { color: #a7f3d0; }
+  .log-text.error { color: #fca5a5; }
+
+  audio { width: 100%; height: 32px; margin-top: 6px; border-radius: 6px; }
+  .gen-img { max-width: 100%; max-height: 200px; border-radius: 8px; margin-top: 6px; border: 1px solid var(--border); }
+</style>
+</head>
+<body>
+
+<header class="header">
+  <div class="brand">
+    <div class="brand-icon">🤖</div>
+    <div class="brand-text">
+      <h1>WhatsApp Multimodal AI Agent</h1>
+      <span id="target-phone">Active Target: +923298024266</span>
+    </div>
+  </div>
+  <div class="header-actions">
+    <div id="status-badge" class="status-badge connected">Connected</div>
+    <button class="voice-toggle-btn" onclick="logoutSession()" style="color:#f87171; border-color:rgba(239,68,68,0.3);">⏏ Reset</button>
+  </div>
+</header>
+
+<main class="container">
+  <!-- Left Column: Interactive Chat & Live Stats -->
+  <div style="display:flex; flex-direction:column; overflow:hidden; gap:8px;">
+    
+    <!-- Top Stats Bar -->
+    <div class="stats-bar">
+      <div class="stat-card">
+        <span class="stat-value" id="stat-recv">0</span>
+        <span class="stat-label">Received</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value" id="stat-sent">0</span>
+        <span class="stat-label">Replies Sent</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value" id="stat-voice">0</span>
+        <span class="stat-label">Voice Notes</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-value" id="stat-speed">0ms</span>
+        <span class="stat-label">Avg Speed</span>
+      </div>
+    </div>
+
+    <!-- Live AI Playground Card -->
+    <div class="card chat-panel">
+      <div class="card-header">
+        <span class="card-title">💬 Live Multimodal Chat & WhatsApp Stream</span>
+        <span style="font-size:0.75rem; color:#34d399; font-weight:600;">● Active</span>
+      </div>
+
+      <!-- Messages Stream -->
+      <div class="chat-messages" id="chat-stream">
+        <div class="msg-bubble assistant">
+          <div>Assalam o Alaikum! 👋 Main Arham ka AI Assistant hoon. Aap yahan direct text/voice/image test kar sakte hain ya WhatsApp par live message bhej sakte hain!</div>
+          <div class="msg-meta"><span>🤖 System AI</span> • <span>Live</span></div>
+        </div>
+      </div>
+
+      <!-- Quick Test Prompt Chips -->
+      <div class="quick-chips">
+        <span class="chip" onclick="sendQuickPrompt('Assalam o Alaikum! Kaise hain aap?')">👋 Salam</span>
+        <span class="chip" onclick="sendQuickPrompt('Python kya hai detail se samjhao')">🐍 Python Overview</span>
+        <span class="chip" onclick="sendQuickPrompt('Website development ki price kitni hai?')">💰 Pricing</span>
+        <span class="chip" onclick="sendQuickPrompt('Muja banana ki pic bajo')">🍌 Banana Pic</span>
+        <span class="chip" onclick="sendQuickPrompt('Mujhe ek neon sports car ki photo bana kar do')">🎨 Car Pic</span>
+      </div>
+
+      <!-- Input Bar -->
+      <div class="chat-input-box">
+        <button id="voice-mode-btn" class="voice-toggle-btn" onclick="toggleVoiceMode()" title="Toggle Voice Generation">🎙️ Voice: OFF</button>
+        <input type="text" id="chat-input" placeholder="Type message in Roman Urdu / English..." onkeypress="handleKey(event)">
+        <button class="chat-btn" id="send-btn" onclick="sendChatMessage()">Send ⚡</button>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Right Column: Live Terminal Activity Logs -->
+  <div class="card" style="display:flex; flex-direction:column;">
+    <div class="card-header">
+      <span class="card-title">⚡ Live Terminal Logs</span>
+      <button style="background:none; border:none; color:var(--text-muted); font-size:0.75rem; font-weight:600; cursor:pointer;" onclick="clearLogs()">Clear</button>
+    </div>
+    <div class="log-wrap" id="log-list">
+      <div class="log-item info">
+        <span class="log-time">--:--:--</span>
+        <span class="log-text">Connecting to Live WhatsApp AI engine...</span>
+      </div>
+    </div>
+  </div>
+</main>
+
+<script>
+const $ = id => document.getElementById(id);
+let voiceModeActive = false;
+
+function toggleVoiceMode() {
+  voiceModeActive = !voiceModeActive;
+  $('voice-mode-btn').className = 'voice-toggle-btn ' + (voiceModeActive ? 'active' : '');
+  $('voice-mode-btn').textContent = voiceModeActive ? '🎙️ Voice: ON' : '💬 Voice: OFF';
+}
+
+function updateUI(s) {
+  if (!s) return;
+  const status = s.status || 'disconnected';
+  const badge = $('status-badge');
+  badge.className = 'status-badge ' + status;
+  badge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+
+  $('target-phone').textContent = `Target Phone: +${s.user || s.phone || '923298024266'}`;
+
+  // Stats
+  $('stat-recv').textContent = s.stats?.received || 0;
+  $('stat-sent').textContent = s.stats?.sent || 0;
+  $('stat-voice').textContent = s.stats?.voiceCount || 0;
+  $('stat-speed').textContent = (s.stats?.avgMs || 0) + 'ms';
+
+  // Logs
+  if (s.logs && s.logs.length) {
+    const list = $('log-list');
+    list.innerHTML = s.logs.map(l => `
+      <div class="log-item ${l.type}">
+        <span class="log-time">${l.ts}</span>
+        <span class="log-text ${l.type}">${l.msg}</span>
+      </div>
+    `).join('');
+  }
+}
+
+function appendMessage(role, from, text, audioBase64 = null, imageUrl = null, ms = null) {
+  const stream = $('chat-stream');
+  const div = document.createElement('div');
+  div.className = `msg-bubble ${role}`;
+
+  let contentHtml = `<div>${text}</div>`;
+
+  if (imageUrl) {
+    contentHtml += `<img src="${imageUrl}" class="gen-img" alt="Generated Image">`;
+  }
+
+  if (audioBase64) {
+    contentHtml += `<audio controls autoplay src="data:audio/mp3;base64,${audioBase64}"></audio>`;
+  }
+
+  const timeStr = new Date().toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit' });
+  const metaStr = ms ? `${ms}ms` : 'Instant';
+  contentHtml += `<div class="msg-meta"><span>${from}</span> • <span>${timeStr} (${metaStr})</span></div>`;
+
+  div.innerHTML = contentHtml;
+  stream.appendChild(div);
+  stream.scrollTop = stream.scrollHeight;
+}
+
+async function sendChatMessage() {
+  const input = $('chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = '';
+  appendMessage('user', 'You', text);
+
+  const sendBtn = $('send-btn');
+  if (sendBtn) {
+    sendBtn.disabled = true;
+    sendBtn.textContent = 'Thinking... ⏳';
+  }
+
+  const stream = $('chat-stream');
+  const tempId = 'temp-' + Date.now();
+  const tempDiv = document.createElement('div');
+  tempDiv.id = tempId;
+  tempDiv.className = 'msg-bubble assistant';
+  tempDiv.innerHTML = '<span style="color:#60a5fa; font-size:0.85rem;">🤖 Arham\'s AI is thinking...</span>';
+  stream.appendChild(tempDiv);
+  stream.scrollTop = stream.scrollHeight;
+
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        message: text,
+        generateVoice: voiceModeActive
+      })
+    });
+
+    const loader = document.getElementById(tempId);
+    if (loader) loader.remove();
+
+    const data = await res.json();
+    if (data.type === 'image') {
+      appendMessage('assistant', "Arham's AI Assistant", data.caption, null, data.imageUrl, data.ms);
+    } else {
+      appendMessage('assistant', "Arham's AI Assistant", data.text, data.audio, null, data.ms);
+    }
+  } catch(e) {
+    const loader = document.getElementById(tempId);
+    if (loader) loader.remove();
+    appendMessage('assistant', "System", `⚠️ Note: ${e.message}`);
+  } finally {
+    if (sendBtn) {
+      sendBtn.disabled = false;
+      sendBtn.textContent = 'Send ⚡';
+    }
+  }
+}
+
+function sendQuickPrompt(prompt) {
+  $('chat-input').value = prompt;
+  sendChatMessage();
+}
+
+function handleKey(e) {
+  if (e.key === 'Enter') sendChatMessage();
+}
+
+function connectSSE() {
+  try {
+    const es = new EventSource('/events');
+    es.onmessage = e => {
+      try {
+        const data = JSON.parse(e.data);
+        if (data.type === 'update') updateUI(data.state);
+      } catch(err){}
+    };
+    es.onerror = () => {
+      es.close();
+      setTimeout(connectSSE, 2000);
+    };
+  } catch(e) {}
+}
+
+function pollStatus() {
+  fetch('/status')
+    .then(r => r.json())
+    .then(updateUI)
+    .catch(() => {
+      const badge = $('status-badge');
+      if (badge) {
+        badge.className = 'status-badge disconnected';
+        badge.textContent = 'Reconnecting...';
+      }
+    });
+}
+
+window.addEventListener('load', () => {
+  pollStatus();
+  setTimeout(connectSSE, 300);
+  setInterval(pollStatus, 2000);
+});
+
+function logoutSession() {
+  if (confirm('WhatsApp session reset karein? Naya QR generate hoga.')) {
+    fetch('/logout', { method: 'POST' }).then(() => location.reload()).catch(e => alert(e.message));
+  }
+}
+
+function clearLogs() {
+  $('log-list').innerHTML = '';
+}
+</script>
+</body>
+</html>
