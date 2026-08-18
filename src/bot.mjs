@@ -742,23 +742,36 @@ function createClient() {
   });
 
   // ── Message Deduplication & Handler ─────────────────────────────────────────
+  // ── Unified Message Deduplication & Handler ───────────────────────────────
   const processedMsgs = new Set();
   const chatLocks = new Set();
 
-  client.on('message', async (msg) => {
+  async function handleIncomingMessage(msg) {
     try {
-      if (msg.from === 'status@broadcast' || msg.from.endsWith('@g.us') || msg.from.endsWith('@newsletter') || msg.from.endsWith('@broadcast') || msg.from.includes('newsletter')) return;
-      if (msg.fromMe) return;
+      // 1. Owner's Outgoing Message (from phone or web)
+      if (msg.fromMe) {
+        const targetChat = msg.to;
+        if (targetChat && pendingReplies.has(targetChat)) {
+          clearTimeout(pendingReplies.get(targetChat).timerId);
+          pendingReplies.delete(targetChat);
+          const targetNumber = targetChat.split('@')[0];
+          log(`🛑 Arham replied manually to +${targetNumber}! Bot 30s reply cancelled.`, 'success');
+        }
+        if (msg.body && msg.body.trim()) {
+          learnFromOwner(msg.body);
+        }
+        return;
+      }
 
-      // 🛑 STRICT NO-HISTORY RULE: Only reply to messages sent AFTER the bot is ready!
-      if (!isBotReady) return;
-      if (msg.timestamp && msg.timestamp < readyTimestamp) return;
+      // 2. Filter system / broadcast / newsletter messages
+      if (!msg.from || msg.from === 'status@broadcast' || msg.from.endsWith('@g.us') || msg.from.endsWith('@newsletter') || msg.from.endsWith('@broadcast') || msg.from.includes('newsletter')) return;
 
+      // 3. Deduplicate message IDs
       const msgId = msg.id?._serialized || msg.id?.id;
       if (msgId) {
         if (processedMsgs.has(msgId)) return;
         processedMsgs.add(msgId);
-        if (processedMsgs.size > 1000) {
+        if (processedMsgs.size > 2000) {
           const firstKey = processedMsgs.values().next().value;
           processedMsgs.delete(firstKey);
         }
@@ -771,7 +784,7 @@ function createClient() {
         const senderNumber = msg.from.split('@')[0];
         const senderName = msg._data?.notifyName || senderNumber;
 
-        // 🛑 Ignore automated broadcast bots spamming inbox
+        // Ignore automated broadcast bots spamming inbox
         if (senderName.toLowerCase().includes('bot') ||
             senderName.toLowerCase().includes('live kitchen') ||
             senderName.toLowerCase().includes('golootlo') ||
@@ -784,7 +797,9 @@ function createClient() {
         let isVoiceMessage = false;
         let isImageMessage = false;
 
-        // 🖼️ 1. Handle Incoming Photo / Image (Vision AI)
+        log(`📩 Incoming message from +${senderNumber} (${senderName}): "${userText.substring(0, 60)}"`, 'info');
+
+        // 🖼️ A. Handle Incoming Photo / Image (Vision AI)
         if (msg.hasMedia && (msg.type === 'image' || msg.mimetype?.startsWith('image/'))) {
           isImageMessage = true;
           log(`📸 Photo received from +${senderNumber} (${senderName}). Analyzing image content...`, 'info');
@@ -805,20 +820,18 @@ function createClient() {
           }
         }
 
-        // 🎙️ 2. Handle Voice Note / Audio Message
+        // 🎙️ B. Handle Voice Note / Audio Message
         if (msg.hasMedia && (msg.type === 'ptt' || msg.type === 'audio' || msg.type === 'document')) {
           log(`🎙️ Voice Note received from +${senderNumber} (${senderName}). Transcribing...`, 'info');
           state.stats.voiceCount = (state.stats.voiceCount || 0) + 1;
 
           try {
             const audioResult = await extractAudioBase64(msg);
-
             if (audioResult && audioResult.data) {
               const ext = audioResult.mimetype.includes('mp4') ? 'mp4' : audioResult.mimetype.includes('mp3') ? 'mp3' : 'ogg';
               const tempFile = path.join(__dirname, `voice_${Date.now()}.${ext}`);
               fs.writeFileSync(tempFile, Buffer.from(audioResult.data, 'base64'));
 
-              // Ultra-accurate Groq Whisper Large-v3 Speech-to-Text (Urdu Script Enforced)
               const transcription = await groq.audio.transcriptions.create({
                 file: fs.createReadStream(tempFile),
                 model: 'whisper-large-v3',
@@ -833,8 +846,6 @@ function createClient() {
               userText = typeof transcription === 'string' ? transcription.trim() : transcription?.text?.trim();
               isVoiceMessage = true;
               log(`🗣️ Transcribed Voice (${senderName}): "${userText}"`, 'success');
-            } else {
-              log(`⚠️ Voice audio download pending from WhatsApp servers.`, 'warn');
             }
           } catch (audioErr) {
             log(`Voice transcription error: ${audioErr.message}`, 'error');
@@ -849,7 +860,7 @@ function createClient() {
         if (state.messages.length > 50) state.messages.shift();
         broadcast();
 
-        // 🎨 3. Handle Explicit AI Image Generation Request (INSTANT - NO 30s DELAY)
+        // 🎨 C. Handle Explicit AI Image Generation Request (INSTANT - NO 30s DELAY)
         if (isImageGenerationRequest(userText)) {
           log(`🎨 User requested AI Image Generation: "${userText}" (Generating Instantly...)`, 'info');
           try {
@@ -872,7 +883,7 @@ function createClient() {
           }
         }
 
-        // ⏳ 4. Text & Voice 30-Second Human-in-the-Loop Smart Buffer
+        // ⏳ D. Text & Voice 30-Second Human-in-the-Loop Smart Buffer
         if (pendingReplies.has(msg.from)) {
           clearTimeout(pendingReplies.get(msg.from).timerId);
         }
@@ -890,30 +901,14 @@ function createClient() {
       } finally {
         chatLocks.delete(msg.from);
       }
-
     } catch(err) {
-      log(`Error: ${err.message}`, 'error');
+      log(`Message handling error: ${err.message}`, 'error');
     }
-  });
+  }
 
-  // 👤 5. Owner Message Listener: Cancel 30s Bot Timer & Learn Owner's Chat Style
-  client.on('message_create', async (msg) => {
-    try {
-      if (msg.fromMe) {
-        const targetChat = msg.to;
-        if (pendingReplies.has(targetChat)) {
-          clearTimeout(pendingReplies.get(targetChat).timerId);
-          pendingReplies.delete(targetChat);
-          const targetNumber = targetChat.split('@')[0];
-          log(`🛑 Arham replied manually to +${targetNumber}! Bot 30s reply cancelled.`, 'success');
-        }
-
-        if (msg.body && msg.body.trim()) {
-          learnFromOwner(msg.body);
-        }
-      }
-    } catch(e){}
-  });
+  // Listen to all messages reliably
+  client.on('message', handleIncomingMessage);
+  client.on('message_create', handleIncomingMessage);
 
   async function executeAIReply(chatId, userText, senderName, senderNumber, isVoiceMessage) {
     try {
