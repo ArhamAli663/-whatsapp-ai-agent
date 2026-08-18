@@ -951,7 +951,7 @@ function createClient() {
 }
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log('\n' + '═'.repeat(55));
   console.log('  🎙️ WHATSAPP MULTIMODAL AI AGENT (VOICE + TEXT + VISION + IMAGE GEN)');
   console.log(`  📊 Web Dashboard: http://localhost:${PORT}`);
