@@ -877,6 +877,11 @@ function createClient() {
         let isVoiceMessage = false;
         let isImageMessage = false;
 
+        // If userText contains raw base64 binary (e.g. from an image attachment), extract only caption
+        if (userText.startsWith('/9j/') || userText.startsWith('data:image') || (userText.length > 300 && !userText.includes(' '))) {
+          userText = (msg._data?.caption || msg.caption || '').trim();
+        }
+
         if (!userText && !msg.hasMedia) {
           log(`ℹ️ System/handshake packet from +${senderNumber} (${msg.type}) - waiting for actual message`, 'info');
           return;
