@@ -270,7 +270,9 @@ DO NOT use markdown symbols like #, ##, ###, *, **, _, or bullets.`;
   return { text: fallback, ms: Date.now() - start, engine: 'Fallback' };
 }
 
-// ── Universal AI Image Generation Detector (Supports all Urdu/Roman Urdu terms & typos) ──
+// ── Universal AI Image Generation & Edit Detector ────────────────────────────
+const lastImageMemory = new Map(); // chatId -> { base64, mimeType, description, ts }
+
 function isImageGenerationRequest(text) {
   if (!text) return false;
   const t = text.toLowerCase().trim();
@@ -287,7 +289,21 @@ function isImageGenerationRequest(text) {
   return false;
 }
 
-// ── Lightning-Fast (<2s) Image Generation (Exact User Understanding) ─────────
+function isGenericEditRequest(text) {
+  if (!text) return false;
+  const t = text.toLowerCase().trim();
+  const hasEdit = /\b(edit|change|modify|theek|badal|badlo)\b/i.test(t);
+  const hasSpecifics = /\b(color|red|blue|green|black|white|yellow|pink|background|sunset|night|day|sky|anime|sketch|cartoon|3d|hd|dark|light|remove|add|hatao|lagao|kardo|kar do|bana do|banado)\b/i.test(t);
+  return hasEdit && !hasSpecifics;
+}
+
+function isSpecificEditRequest(text) {
+  if (!text) return false;
+  const t = text.toLowerCase().trim();
+  return /\b(edit|change|modify|badal|badlo|kar do|kardo|bana do|banado|color|red|blue|green|black|white|yellow|pink|background|sunset|night|day|sky|anime|sketch|cartoon|3d|hd|dark|light|remove|add|hatao|lagao)\b/i.test(t);
+}
+
+// ── Ultra-Realistic HD Image Generation (Flux.1 / SDXL) ──────────────────────
 async function generateAIImage(userPrompt) {
   try {
     const res = await groq.chat.completions.create({
@@ -295,19 +311,18 @@ async function generateAIImage(userPrompt) {
       messages: [
         {
           role: 'system',
-          content: 'You are an image prompt translator. Convert the user request (Roman Urdu, Urdu, or English) into a concise 1-sentence English photo prompt representing EXACTLY what the user asked for. Do not add unrelated sci-fi or complex elements unless requested. Output ONLY the English prompt, no other words, no markdown.'
+          content: 'You are an expert AI photo prompt engineer. Convert the user request into a single concise, highly detailed, photorealistic 1-sentence English image prompt representing EXACTLY what the user requested. Focus on realistic lighting, high resolution, and sharp details. Output ONLY the English prompt, no other words, no markdown.'
         },
         { role: 'user', content: userPrompt }
       ],
-      max_tokens: 60,
+      max_tokens: 100,
       temperature: 0.2
     });
 
     let enhancedPrompt = res.choices[0]?.message?.content?.replace(/<think>[\s\S]*?(<\/think>|$)/gi, '').trim() || userPrompt;
     if (!enhancedPrompt || enhancedPrompt.length < 3) enhancedPrompt = userPrompt;
 
-    // Fast Turbo Engine (<2s)
-    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(enhancedPrompt)}?width=768&height=768&nologo=true`;
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(enhancedPrompt)}?width=1024&height=1024&nologo=true&enhance=true&model=flux`;
     const response = await fetch(url);
     if (response.ok) {
       const buf = Buffer.from(await response.arrayBuffer());
@@ -319,34 +334,98 @@ async function generateAIImage(userPrompt) {
   return null;
 }
 
-// ── Vision / Image Understanding Helper ──────────────────────────────────────
-async function analyzeIncomingImage(imageBuffer, userCaption, senderName) {
+// ── Precise Image Editing Prompt Generator ──────────────────────────────────
+async function generateEditedImage(originalImageDescription, userEditInstruction) {
+  try {
+    const res = await groq.chat.completions.create({
+      model: 'openai/gpt-oss-20b',
+      messages: [
+        {
+          role: 'system',
+          content: 'You are an expert AI image editor. Given the original image description and the user\'s edit instruction, generate a single, highly detailed, photorealistic English image generation prompt describing the exact scene with ONLY the requested edits applied, keeping the original composition, subject, and style intact. Output ONLY the English prompt, no other text, no markdown.'
+        },
+        {
+          role: 'user',
+          content: `Original Image Scene: ${originalImageDescription}\nUser Edit Instruction: ${userEditInstruction}`
+        }
+      ],
+      max_tokens: 120,
+      temperature: 0.3
+    });
+    let editedPrompt = res.choices[0]?.message?.content?.replace(/<think>[\s\S]*?(<\/think>|$)/gi, '').trim() || userEditInstruction;
+    if (!editedPrompt || editedPrompt.length < 5) editedPrompt = userEditInstruction;
+
+    const url = `https://image.pollinations.ai/prompt/${encodeURIComponent(editedPrompt)}?width=1024&height=1024&nologo=true&enhance=true&model=flux`;
+    const response = await fetch(url);
+    if (response.ok) {
+      const buf = Buffer.from(await response.arrayBuffer());
+      return { base64: buf.toString('base64'), prompt: editedPrompt };
+    }
+  } catch(e) {
+    log(`Image edit generation error: ${e.message}`, 'error');
+  }
+  return null;
+}
+
+// ── Gemini 3.5 Flash Vision / Image Understanding Helper ─────────────────────
+const GEMINI_API_KEY = process.env.GEMINI_KEY || '';
+
+async function analyzeIncomingImage(imageBuffer, mimeType, userCaption, senderName) {
+  const base64Data = imageBuffer.toString('base64');
+  
+  // 1. Primary: Google Gemini 3.5 Flash Vision
+  try {
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash:generateContent?key=${GEMINI_API_KEY}`;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { inlineData: { mimeType: mimeType || 'image/jpeg', data: base64Data } },
+            {
+              text: `You are Arham's AI Assistant on WhatsApp. Analyze this image carefully.
+User caption/question: "${userCaption || 'No caption'}"
+Task:
+1. If the user asked a question, solve the math/code/error or answer what is shown in natural Roman Urdu (using male grammar: kar sakta hoon).
+2. If no question, explain clearly what is in the image in friendly, natural Roman Urdu in 2-4 sentences.
+Do NOT use markdown headers or asterisks.`
+            }
+          ]
+        }]
+      })
+    });
+    const data = await res.json();
+    const visionText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+    if (visionText) return sanitizeReply(visionText);
+  } catch(e) {
+    log(`Gemini Vision error: ${e.message}`, 'warn');
+  }
+
+  // 2. Fallback: OCR + Groq
   try {
     const tempImg = path.join(__dirname, `img_${Date.now()}.jpg`);
     fs.writeFileSync(tempImg, imageBuffer);
-
-    // Perform OCR on image to extract text, errors, diagrams, code
     const { data: { text: ocrText } } = await Tesseract.recognize(tempImg, 'eng', { logger: () => {} });
     try { fs.unlinkSync(tempImg); } catch(e){}
 
     const cleanOcr = (ocrText || '').trim();
     const prompt = `User sent an image on WhatsApp with caption: "${userCaption || 'No caption provided'}".
-Extracted text from image: "${cleanOcr || '[Visual image without heavy text]' }".
-Task: Explain what is in the image, solve any problem or programming/math error shown, answer the user's caption question in depth, and reply in natural, helpful Roman Urdu (using male grammar: kar sakta hoon).`;
+Extracted text from image: "${cleanOcr || '[Visual image]' }".
+Task: Explain what is in the image and reply in natural, helpful Roman Urdu (using male grammar: kar sakta hoon).`;
 
     const res = await groq.chat.completions.create({
-      model: 'groq/compound',
+      model: 'openai/gpt-oss-20b',
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
         { role: 'user', content: prompt }
       ],
-      max_tokens: 600,
-      temperature: 0.7
+      max_tokens: 500,
+      temperature: 0.6
     });
 
     return sanitizeReply(res.choices[0]?.message?.content) || 'Maine aapki photo dekh li hai! Agar aap iske baare mein mazeed kuch poochna chahein to bataiye, main madad kar sakta hoon.';
   } catch(e) {
-    log(`Image vision analysis error: ${e.message}`, 'error');
     return 'Maine aapki tasweer dekh li hai. Aap iske baare mein kya poochna chahte hain? Main aapko detail se samjha sakta hoon.';
   }
 }
@@ -393,31 +472,6 @@ async function extractAudioBase64(msg) {
     await new Promise(r => setTimeout(r, 400));
   }
 
-  // 🌐 Method 3: Browser DOM MediaBlobCache fallback
-  if (client?.pupPage && msg.id?._serialized) {
-    try {
-      const res = await client.pupPage.evaluate(async (id) => {
-        try {
-          const m = window.Store?.Msg?.get(id);
-          if (!m) return null;
-          if (m.filehash) {
-            const blob = window.Store?.MediaBlobCache?.get(m.filehash);
-            if (blob) {
-              return await new Promise((resolve) => {
-                const reader = new FileReader();
-                reader.onloadend = () => resolve(reader.result ? { data: reader.result.split(',')[1], mimetype: m.mimetype || 'audio/ogg' } : null);
-                reader.onerror = () => resolve(null);
-                reader.readAsDataURL(blob);
-              });
-            }
-          }
-        } catch(e) { return null; }
-        return null;
-      }, msg.id._serialized);
-      if (res && res.data) return res;
-    } catch(e) {}
-  }
-
   return null;
 }
 
@@ -442,7 +496,7 @@ async function prepareSpeechScript(text) {
   const isUrduScript = /[\u0600-\u06FF]/.test(clean);
   if (isUrduScript) return clean;
 
-  // Convert Roman Urdu to natural Urdu script for flawless girl pronunciation
+  // Convert Roman Urdu to natural Urdu script for flawless pronunciation
   try {
     const res = await groq.chat.completions.create({
       model: 'openai/gpt-oss-20b',
@@ -476,11 +530,11 @@ async function convertMp3ToWhatsAppOpus(mp3Buffer) {
       .toFormat('ogg')
       .audioCodec('libopus')
       .audioChannels(1)
-      .audioFrequency(16000)
-      .audioBitrate('32k')
+      .audioFrequency(48000)
+      .audioBitrate('64k')
       .outputOptions([
         '-c:a libopus',
-        '-b:a 32k',
+        '-b:a 64k',
         '-vbr on',
         '-compression_level 10',
         '-application voip'
@@ -527,7 +581,6 @@ async function generateVoiceBase64(text) {
       stream.on('data', (c) => chunks.push(c));
       stream.on('end', () => resolve(Buffer.concat(chunks)));
       stream.on('error', (err) => reject(err));
-      setTimeout(() => resolve(chunks.length ? Buffer.concat(chunks) : null), 35000);
     });
 
     if (audioBuffer && audioBuffer.length > 500) {
@@ -889,7 +942,7 @@ function createClient() {
 
         log(`📩 Incoming message from +${senderNumber} (${senderName}): "${userText.substring(0, 60)}"`, 'info');
 
-        // 🖼️ A. Handle Incoming Photo / Image (Vision AI)
+        // 🖼️ A. Handle Incoming Photo / Image (Vision AI & Editing)
         if (msg.hasMedia && (msg.type === 'image' || msg.mimetype?.startsWith('image/'))) {
           isImageMessage = true;
           log(`📸 Photo received from +${senderNumber} (${senderName}). Analyzing image content...`, 'info');
@@ -897,8 +950,44 @@ function createClient() {
             const media = await msg.downloadMedia();
             if (media && media.data) {
               const imgBuffer = Buffer.from(media.data, 'base64');
-              const visionExplanation = await analyzeIncomingImage(imgBuffer, userText, senderName);
+              const visionExplanation = await analyzeIncomingImage(imgBuffer, media.mimetype || 'image/jpeg', userText, senderName);
 
+              // Save in image memory for follow-up editing
+              lastImageMemory.set(msg.from, {
+                base64: media.data,
+                mimeType: media.mimetype || 'image/jpeg',
+                description: visionExplanation,
+                ts: Date.now()
+              });
+
+              // Case 1: User says "isko edit karo" (WITHOUT specific details)
+              if (isGenericEditRequest(userText)) {
+                const askMsg = 'Ji bilkul! Aap is photo mein kya cheez edit / change karna chahte hain? (Jaise color change karna, background badalna, ya koi cheez add/remove karna). Detail batayein taake main waisa hi edit kar doon. 😊';
+                await client.sendMessage(msg.from, askMsg);
+                state.stats.received++;
+                state.stats.sent++;
+                log(`⚡ Asked for edit details from +${senderNumber}`, 'info');
+                return;
+              }
+
+              // Case 2: User provides specific edit instruction WITH the image
+              if (isSpecificEditRequest(userText)) {
+                log(`🎨 Editing user image based on instruction: "${userText}"`, 'info');
+                await client.sendMessage(msg.from, 'Main aapki photo ko edit kar raha hoon, bas 2 second wait karein... 🎨');
+                const edited = await generateEditedImage(visionExplanation, userText);
+                if (edited && edited.base64) {
+                  const imgMedia = new MessageMedia('image/jpeg', edited.base64, 'edited.jpg');
+                  await client.sendMessage(msg.from, imgMedia, {
+                    caption: `Yeh rahi aapki edited picture! 🎨✨\n\nEdit: ${userText}`
+                  });
+                  state.stats.received++;
+                  state.stats.sent++;
+                  log(`🎨 Edited image delivered to +${senderNumber}!`, 'success');
+                  return;
+                }
+              }
+
+              // Case 3: Standard Image Description / Q&A
               await client.sendMessage(msg.from, visionExplanation);
               state.stats.received++;
               state.stats.sent++;
@@ -950,7 +1039,36 @@ function createClient() {
         if (state.messages.length > 50) state.messages.shift();
         broadcast();
 
-        // 🎨 C. Handle Explicit AI Image Generation Request (INSTANT - NO 30s DELAY)
+        // 🎨 C. Handle Image Edit on Recently Sent Photo (Follow-up Message)
+        if (lastImageMemory.has(msg.from) && (Date.now() - lastImageMemory.get(msg.from).ts < 15 * 60 * 1000)) {
+          const lastImg = lastImageMemory.get(msg.from);
+          if (isGenericEditRequest(userText)) {
+            const askMsg = 'Ji zaroor! Aap is photo mein kya change karna chahte hain? (Jaise color badalna, background change karna, ya koi cheez add/remove karna). Detail batayein taake main waisa hi edit kar doon. 😊';
+            await client.sendMessage(msg.from, askMsg);
+            state.stats.sent++;
+            log(`⚡ Asked for edit details from +${senderNumber}`, 'info');
+            return;
+          } else if (isSpecificEditRequest(userText) && !isImageGenerationRequest(userText)) {
+            log(`🎨 User requested edit on previous photo: "${userText}"`, 'info');
+            try {
+              await client.sendMessage(msg.from, 'Main aapki photo ko edit kar raha hoon, bas 2 second wait karein... 🎨');
+              const edited = await generateEditedImage(lastImg.description, userText);
+              if (edited && edited.base64) {
+                const imgMedia = new MessageMedia('image/jpeg', edited.base64, 'edited.jpg');
+                await client.sendMessage(msg.from, imgMedia, {
+                  caption: `Yeh rahi aapki edited picture! 🎨✨\n\nEdit: ${userText}`
+                });
+                state.stats.sent++;
+                log(`🎨 Edited image delivered to +${senderNumber} successfully!`, 'success');
+                return;
+              }
+            } catch(editErr) {
+              log(`Edit generation error: ${editErr.message}`, 'error');
+            }
+          }
+        }
+
+        // 🎨 D. Handle Explicit AI Image Generation Request (INSTANT - NO 30s DELAY)
         if (isImageGenerationRequest(userText)) {
           log(`🎨 User requested AI Image Generation: "${userText}" (Generating Instantly...)`, 'info');
           try {
@@ -973,7 +1091,7 @@ function createClient() {
           }
         }
 
-        // ⏳ D. Text & Voice 30-Second Human-in-the-Loop Smart Buffer
+        // ⏳ E. Text & Voice 30-Second Human-in-the-Loop Smart Buffer
         if (pendingReplies.has(msg.from)) {
           clearTimeout(pendingReplies.get(msg.from).timerId);
         }
