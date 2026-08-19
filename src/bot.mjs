@@ -47,57 +47,64 @@ function saveMemoryToFile() {
 
 function getHistory(chatId) {
   if (!memoryStore[chatId]) memoryStore[chatId] = [];
-  // Slice to last 4 turns and truncate to 200 chars max to prevent 413 payload errors
-  return memoryStore[chatId].slice(-4).map(h => ({
+  // Return last 6 turns with full content (up to 800 chars each) for complete context
+  return memoryStore[chatId].slice(-6).map(h => ({
     role: h.role,
-    content: (h.content || '').substring(0, 200)
+    content: (h.content || '').substring(0, 800)
   }));
 }
 
 function saveHistory(chatId, role, text) {
   if (!memoryStore[chatId]) memoryStore[chatId] = [];
-  memoryStore[chatId].push({ role, content: (text || '').substring(0, 250), time: new Date().toISOString() });
-  if (memoryStore[chatId].length > 10) {
-    memoryStore[chatId] = memoryStore[chatId].slice(-10);
+  memoryStore[chatId].push({ role, content: (text || '').substring(0, 1000), time: new Date().toISOString() });
+  if (memoryStore[chatId].length > 16) {
+    memoryStore[chatId] = memoryStore[chatId].slice(-16);
   }
   saveMemoryToFile();
 }
 
-const SYSTEM_PROMPT = `You are a real, friendly, highly intelligent assistant named Arham's AI Assistant.
-You chat naturally, warmly, and casually on WhatsApp (both voice notes and text).
+const SYSTEM_PROMPT = `You are Arham's AI Assistant, chatting naturally, warmly, and helpfully on WhatsApp.
 
-GENDER & GRAMMAR RULES (VERY IMPORTANT):
-- GRAMMATICAL GENDER: Always use MALE grammatical forms (مذکر) when referring to yourself in Urdu / Roman Urdu.
-  - Say: "main kar sakta hoon" (NOT "sakti"), "main bata sakta hoon", "main samjha sakta hoon", "main Arham ka AI Assistant hoon".
+ABOUT ARHAM & SERVICES:
+- Arham is a skilled Software Engineer & Full-Stack AI Developer.
+- Services & Pricing:
+  1. Website Development: Starting from 15,000 PKR
+     - Fully responsive modern design (mobile, tablet, desktop).
+     - Frontend in HTML5/CSS3/React/Next.js/WordPress.
+     - Fast loading speed, SEO optimization, and SSL security.
+     - WhatsApp direct chat integration & lead contact form.
+     - Delivery time: 3 to 5 business days.
+     - Free 1-month post-launch maintenance & support.
+  2. Mobile App Development: Starting from 20,000 PKR
+     - Cross-platform Android & iOS apps (Flutter / React Native).
+     - Clean modern UI/UX, user authentication, database integration.
+     - Push notifications, API integration, and app store setup.
+     - Delivery time: 2 to 4 weeks depending on scope.
+  3. AI Chatbots & WhatsApp Automation: Starting from 5,000 PKR
+     - Custom intelligent WhatsApp & Web AI bots.
+     - Features: 24/7 auto replies, multi-language (Roman Urdu/Urdu/English), voice notes support, vision image analysis, and instant image generation.
+  4. Custom Software & API Development: Tailored to client's specific business requirements.
+
+GENDER & GRAMMAR RULES (STRICT):
+- Always use MALE grammatical forms (مذکر) in Urdu / Roman Urdu:
+  - "main kar sakta hoon", "main bata sakta hoon", "main samjha deta hoon", "main help kar sakta hoon".
   - NEVER use female verb endings like "sakti hoon", "bata rahi hoon", "samjha rahi hoon".
 
-CRITICAL HUMAN CONVERSATIONAL RULES:
-1. FOCUS STRICTLY ON THE CURRENT MESSAGE:
-   - Always respond directly to what the user JUST sent in their latest message.
-   - NEVER bring up, re-explain, or dump old topics from past messages unless the user specifically asks you to follow up on it.
-   - When a user sends a greeting ('aoa', 'salam', 'hello', 'hi'), reply ONLY with a warm, natural greeting:
-     "Wa Alaikum Assalam! Kaise hain aap? Ji bataiye main aapki kya madad kar sakta hoon? 😊" (or "Assalam o Alaikum! Hello! Kaise hain aap? 😊")
-   - NEVER say things like "Aap ne pehle Python maanga tha toh main woh bata raha hoon".
+CONVERSATIONAL RULES (CRITICAL):
+1. GREETING RULE (STRICT):
+   - Greet the user (Salam / Kaise hain) ONLY in the very first interaction.
+   - Once a conversation has started, NEVER repeat Salam, hal-chal, or introductory pleasantries. Directly answer the user's question immediately!
 
-2. TALK CASUALLY & PROPORTIONATELY:
-   - For short messages or casual talk ('kya haal hai', 'kaise ho', 'theek ho'): Reply short and sweet ("Alhamdulillah main bilkul theek hoon! Aap sunayein, sab kheriyat?").
-   - For specific questions (e.g. 'Python kya hai', 'Website banwani hai'): Answer clearly, helpfully, and thoroughly in natural conversational style without robotic fluff.
-   - DO NOT dump pricing or service menus unless the user specifically asks for prices or services.
+2. SHORT DEFAULT VS FULL UNBROKEN DETAILS:
+   - For simple or casual questions (e.g. 'Website kitne ki hai', 'Kahan se ho', 'Mobile app banate ho?'):
+     Reply in 1-3 crisp, natural, conversational sentences without dumping huge walls of text.
+   - When the user asks for DETAILS, PRICING, FEATURES, PROCESS, or EXPLANATIONS (e.g. 'detail batao', 'kya kya features hain', 'website ki poori info do', 'process samjhao'):
+     Provide a COMPLETE, THOROUGH, and UNBROKEN explanation. List all features, timeline, process, and pricing clearly. NEVER stop halfway or cut off mid-sentence!
 
-3. SERVICES & PRICING (Share only when user asks):
-   - Website Development: 15,000 PKR
-   - Mobile App Development: 20,000 PKR
-   - AI Chatbot Development: 5,000 PKR
-
-4. IMAGE & MULTIMODAL CAPABILITIES:
-   - You can understand incoming images, screenshots, code errors, receipts, and photos sent by the user.
-   - You can also generate AI images when requested.
-
-5. LANGUAGE & VOICE:
-   - Roman Urdu (Primary / Default). Natural Pakistani everyday spoken Urdu.
-   - Urdu Script (اردو) if user writes/speaks in Urdu script.
-   - STRICT NO HINDI / NO DEVANAGARI: Never use Hindi/Devanagari.
-   - NEVER output internal thinking steps, reasoning tags, or robotic AI intros.`;
+3. CLEAN HUMAN FORMATTING:
+   - Write in clean, plain human WhatsApp message style.
+   - Do NOT use markdown symbols like #, ##, ###, *, **, _, or code ticks in text messages.
+   - STRICT NO HINDI / NO DEVANAGARI: Use natural Pakistani Roman Urdu or Urdu script.`;
 
 // ── Anti-Hindi, Thinking Block & Markdown Stripper ───────────────────────────
 function sanitizeReply(text) {
@@ -107,13 +114,13 @@ function sanitizeReply(text) {
   // Strip any accidental Devanagari characters
   clean = clean.replace(/[\u0900-\u097F]/g, '');
   
-  // Clean robotic markdown symbols (like #, ##, ###, *, **, _, `) for 100% human-like plain text
+  // Clean robotic markdown symbols for 100% human-like plain text
   clean = clean
-    .replace(/^#{1,6}\s+/gm, '') // Remove markdown headers like ### Python
-    .replace(/\*\*(.*?)\*\*/g, '$1') // Remove **bold**
-    .replace(/\*(.*?)\*/g, '$1') // Remove *italic*
-    .replace(/_{1,2}(.*?)_{1,2}/g, '$1') // Remove _italic_
-    .replace(/`{1,3}[\s\S]*?`{1,3}/g, (m) => m.replace(/`/g, '')) // Remove code ticks
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*(.*?)\*\*/g, '$1')
+    .replace(/\*(.*?)\*/g, '$1')
+    .replace(/_{1,2}(.*?)_{1,2}/g, '$1')
+    .replace(/`{1,3}[\s\S]*?`{1,3}/g, (m) => m.replace(/`/g, ''))
     .replace(/\bnamaste\b/gi, 'Assalam o Alaikum')
     .replace(/\bnamaskar\b/gi, 'Assalam o Alaikum')
     .replace(/\bdhanyawad\b/gi, 'Shukriya')
@@ -139,7 +146,6 @@ try {
 
 function learnFromOwner(text) {
   if (!text || text.length < 4 || isGreeting(text)) return;
-  // Ignore AI intro text
   if (text.includes('Arham ka AI Assistant') || text.includes('Yeh rahi aapki generated picture')) return;
 
   ownerPhrases.push({
@@ -168,9 +174,19 @@ function isGreeting(text) {
   return /^(hi|hello|hey|salam|aoa|asalam|assalam|assalam o alaikum|assalam-o-alaikum|slaam|kya haal hai|kya hal hai|kaise ho|theek ho|kaisay ho)$/i.test(clean);
 }
 
+function isDetailRequest(text) {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  return /\b(detail|details|tafseel|mukammal|poora|poori|explain|wazahat|features|list|tareeqa|process|pricing|prices|rate|rates|package|packages|portfolio|services|kaise banta|kaise hoga|kya kya|kya shamil|step by step|full|sab batao|poori info|poori information)\b/i.test(t);
+}
+
 async function getAIReply(chatId, userText, senderName, isVoice = false) {
-  // 🎯 Instant Human Greeting Response (Like Meta AI - No huge essays, no old topics)
-  if (isGreeting(userText)) {
+  const history = getHistory(chatId);
+  const isNewConversation = history.length === 0;
+  const isDetailed = isDetailRequest(userText);
+
+  // 🎯 First Turn Greeting Response Only
+  if (isNewConversation && isGreeting(userText)) {
     const clean = userText.trim().toLowerCase();
     let greet = "Wa Alaikum Assalam! Kaise hain aap? Ji bataiye main aapki kya madad kar sakta hoon? 😊";
     if (clean.startsWith('hi') || clean.startsWith('hello') || clean.startsWith('hey')) {
@@ -179,37 +195,44 @@ async function getAIReply(chatId, userText, senderName, isVoice = false) {
       greet = "Alhamdulillah main bilkul theek hoon! Aap sunayein, sab kheriyat? 😊";
     }
     
-    // Reset history for fresh turn
-    memoryStore[chatId] = [];
     saveHistory(chatId, 'user', userText);
     saveHistory(chatId, 'assistant', greet);
 
     const spokenGreet = isVoice ? 'وعلیکم السلام! میں ارہم کا اسسٹنٹ ہوں۔ آپ کیسے ہیں؟ جی بتائیں میں آپ کی کیا مدد کر سکتا ہوں؟' : greet;
-    return { text: isVoice ? spokenGreet : greet, ms: 120, engine: 'Human Greeting Engine' };
+    return { text: isVoice ? spokenGreet : greet, ms: 120, engine: 'Greeting Engine' };
   }
 
-  const history = getHistory(chatId);
   const ownerStyle = getOwnerStyleContext();
-  
-  const systemInstruction = isVoice
-    ? `${SYSTEM_PROMPT}${ownerStyle}\n\nVOICE NOTE MODE: You are speaking aloud as a friendly Pakistani voice note. Reply in natural, conversational Pakistani Urdu script (اردو رسم الخط) using male grammar (کر سکتا ہوں). Keep it concise, friendly, and natural. NEVER use markdown symbols.`
-    : `${SYSTEM_PROMPT}${ownerStyle}\n\nTEXT CHAT MODE: Reply in natural Roman Urdu using male grammar (kar sakta hoon). Write in clean, plain human conversational text like Meta AI. DO NOT use markdown symbols like #, ##, ###, *, or bullet headings.`;
+
+  let modeInstruction = '';
+  if (isVoice) {
+    modeInstruction = `VOICE NOTE MODE: You are speaking aloud as Arham's friendly AI voice note on WhatsApp. Reply in natural, conversational Pakistani Urdu script (اردو رسم الخط) using male grammar (کر سکتا ہوں).
+${isDetailed ? 'The user asked for full details in voice. Provide a comprehensive, full, detailed voice explanation covering all aspects clearly without cutting off.' : 'Keep it concise and natural (1-3 sentences).'}
+${!isNewConversation ? 'CRITICAL: Conversation is ALREADY ongoing. DO NOT say Salam, DO NOT ask hal-chal. Speak the answer directly.' : ''}
+NEVER use markdown symbols.`;
+  } else {
+    modeInstruction = `TEXT CHAT MODE: Reply in natural Pakistani Roman Urdu using male grammar (kar sakta hoon).
+${isDetailed ? 'The user explicitly asked for FULL DETAILS/EXPLANATION. Provide a complete, thorough, unbroken breakdown with all features, pricing, timeline, and process. Never cut off or end abruptly.' : 'Keep it short, simple, and natural (1-3 conversational sentences). Do not dump long lists unless asked.'}
+${!isNewConversation ? 'CRITICAL: Conversation is ALREADY ongoing. DO NOT say Salam, DO NOT say Kaise hain aap, DO NOT introduce yourself. Answer directly.' : ''}
+DO NOT use markdown symbols like #, ##, ###, *, **, _, or bullets.`;
+  }
 
   const messages = [
-    { role: 'system', content: systemInstruction },
+    { role: 'system', content: `${SYSTEM_PROMPT}${ownerStyle}\n\n${modeInstruction}` },
     ...history,
     { role: 'user', content: userText },
   ];
 
+  const maxTokens = isDetailed ? 2500 : 600;
   const start = Date.now();
 
-  // 1. Primary: GPT-OSS 20B (Ultra-fast ~400ms, 50,000+ TPM limit, Zero 429 Rate-Limits!)
+  // 1. Primary: GPT-OSS 20B (Ultra-fast, complete generation)
   try {
     const res = await groq.chat.completions.create({
       model: 'openai/gpt-oss-20b',
       messages,
-      temperature: 0.7,
-      max_tokens: 400,
+      temperature: 0.6,
+      max_tokens: maxTokens,
     });
     let reply = sanitizeReply(res.choices[0]?.message?.content);
     if (reply && reply.length > 5) {
@@ -221,30 +244,30 @@ async function getAIReply(chatId, userText, senderName, isVoice = false) {
     log(`20B: ${e.message}`, 'warn');
   }
 
-  // 2. Secondary: Groq Compound Mini
+  // 2. Secondary: Groq Compound
   try {
     const res = await groq.chat.completions.create({
-      model: 'groq/compound-mini',
+      model: 'groq/compound',
       messages,
-      temperature: 0.7,
-      max_tokens: 400,
+      temperature: 0.6,
+      max_tokens: maxTokens,
     });
     let reply = sanitizeReply(res.choices[0]?.message?.content);
     if (reply && reply.length > 5) {
       saveHistory(chatId, 'user', userText);
       saveHistory(chatId, 'assistant', reply);
-      return { text: reply, ms: Date.now() - start, engine: 'Groq (Compound-Mini)' };
+      return { text: reply, ms: Date.now() - start, engine: 'Groq (Compound)' };
     }
   } catch (e) {
-    log(`Compound-Mini: ${e.message}`, 'warn');
+    log(`Compound: ${e.message}`, 'warn');
   }
 
-  const defaultReply = isVoice 
-    ? 'وعلیکم السلام! میں ارہم کا اسسٹنٹ ہوں۔ آپ کیسے ہیں؟ جی بتائیں میں آپ کی کیا مدد کر سکتا ہوں؟'
-    : 'Wa Alaikum Assalam! Kaise hain aap? Ji bataiye main aapki kya madad kar sakta hoon? 😊';
+  const fallback = isVoice
+    ? 'جی بالکل، میں آپ کی مکمل رہنمائی کر سکتا ہوں۔ آپ کو کیا معلومات چاہیے؟'
+    : 'Ji bilkul! Main aapko complete detail provide kar sakta hoon. Aap specific requirements batayein.';
   saveHistory(chatId, 'user', userText);
-  saveHistory(chatId, 'assistant', defaultReply);
-  return { text: defaultReply, ms: Date.now() - start, engine: 'Default' };
+  saveHistory(chatId, 'assistant', fallback);
+  return { text: fallback, ms: Date.now() - start, engine: 'Fallback' };
 }
 
 // ── Universal AI Image Generation Detector (Supports all Urdu/Roman Urdu terms & typos) ──
@@ -419,18 +442,18 @@ async function prepareSpeechScript(text) {
   const isUrduScript = /[\u0600-\u06FF]/.test(clean);
   if (isUrduScript) return clean;
 
-  // Convert Roman Urdu to natural Urdu script for flawless girl pronunciation in <200ms
+  // Convert Roman Urdu to natural Urdu script for flawless girl pronunciation
   try {
     const res = await groq.chat.completions.create({
-      model: 'groq/compound-mini',
+      model: 'openai/gpt-oss-20b',
       messages: [
         {
           role: 'system',
-          content: 'Convert input Roman Urdu into natural Pakistani Urdu script (اردو رسم الخط) for text-to-speech. Output ONLY the Urdu script text.'
+          content: 'Convert input Roman Urdu into natural Pakistani Urdu script (اردو رسم الخط) for text-to-speech voice notes. Keep the exact full meaning and full length. Do not summarize, truncate, or cut short. Output ONLY the Urdu script text.'
         },
-        { role: 'user', content: clean.substring(0, 300) }
+        { role: 'user', content: clean }
       ],
-      max_tokens: 200,
+      max_tokens: 1500,
       temperature: 0.2
     });
     const script = res.choices[0]?.message?.content?.replace(/<think>[\s\S]*?(<\/think>|$)/gi, '').trim();
@@ -494,7 +517,7 @@ async function generateVoiceBase64(text) {
     const tts = new MsEdgeTTS();
     await tts.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
     const readable = tts.toStream(speechText, {
-      rate: '-4%',
+      rate: '+0%',
       pitch: '+0Hz'
     });
     const stream = readable.audioStream || readable;
@@ -504,7 +527,7 @@ async function generateVoiceBase64(text) {
       stream.on('data', (c) => chunks.push(c));
       stream.on('end', () => resolve(Buffer.concat(chunks)));
       stream.on('error', (err) => reject(err));
-      setTimeout(() => resolve(chunks.length ? Buffer.concat(chunks) : null), 8000);
+      setTimeout(() => resolve(chunks.length ? Buffer.concat(chunks) : null), 35000);
     });
 
     if (audioBuffer && audioBuffer.length > 500) {
@@ -524,11 +547,11 @@ async function generateVoiceBase64(text) {
   try {
     const isUrdu = /[\u0600-\u06FF]/.test(clean);
     const lang = isUrdu ? 'ur' : 'en';
-    const base64Audio = await googleTTS.getAudioBase64(clean.substring(0, 400), {
+    const base64Audio = await googleTTS.getAudioBase64(clean.substring(0, 500), {
       lang,
       slow: false,
       host: 'https://translate.google.com',
-      timeout: 8000,
+      timeout: 10000,
     });
     return { base64: base64Audio, mimetype: 'audio/mp3' };
   } catch (e) {
