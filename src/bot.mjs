@@ -278,12 +278,19 @@ DO NOT use markdown symbols like #, ##, ###, *, **, _, or bullets.`;
 // ── Universal AI Image Generation & Edit Detector ────────────────────────────
 const lastImageMemory = new Map(); // chatId -> { base64, mimeType, description, ts }
 
+function isImageEditReference(text) {
+  if (!text) return false;
+  const t = text.toLowerCase().trim();
+  return /\b(is\s+pic|is\s+photo|is\s+image|is\s+tasweer|is\s+tasvir|ais\s+pic|ais\s+photo|ais\s+image|ais\s+tasweer|ye\s+pic|ye\s+photo|yeh\s+pic|yeh\s+photo|iss\s+pic|iss\s+photo|isi\s+pic|isi\s+photo|is\s+mein|ais\s+ma|ais\s+mein)\b/i.test(t);
+}
+
 function isImageGenerationRequest(text) {
   if (!text) return false;
+  if (isImageEditReference(text)) return false; // Reference to existing photo -> Edit, NOT text-to-image
   const t = text.toLowerCase().trim();
   
   const hasImgWord = /\b(pic|pics|picture|pictures|photo|photos|image|images|tasweer|tasweerein|tasvir|wallpaper|drawing|sketch|avatar|logo)\b/i.test(t);
-  const hasAction = /\b(banao|bana|banaen|banaon|banani|generate|create|make|draw|dikhao|chahiye|karo|bhej|bhejo|bajo|bijo|de|do|ka do|k do|ke do|send)\b/i.test(t);
+  const hasAction = /\b(banao|bana|banaen|banaon|banani|generate|create|make|draw|dikhao|chahiye|bhej|bhejo|bajo|bijo|de|do|ka do|k do|ke do|send)\b/i.test(t);
   
   if (hasImgWord && hasAction) return true;
   if (/(ki\s+(pic|photo|image|picture|tasweer|tasvir))/i.test(t)) return true;
@@ -298,14 +305,14 @@ function isGenericEditRequest(text) {
   if (!text) return false;
   const t = text.toLowerCase().trim();
   const hasEdit = /\b(edit|change|modify|theek|badal|badlo)\b/i.test(t);
-  const hasSpecifics = /\b(color|red|blue|green|black|white|yellow|pink|background|sunset|night|day|sky|anime|sketch|cartoon|3d|hd|dark|light|remove|add|hatao|lagao|kardo|kar do|bana do|banado)\b/i.test(t);
+  const hasSpecifics = /\b(color|red|blue|green|black|white|yellow|pink|background|sunset|night|day|sky|anime|sketch|cartoon|3d|hd|dark|light|remove|add|hatao|lagao|kardo|kar do|bana do|banado|amount|price|number)\b/i.test(t);
   return hasEdit && !hasSpecifics;
 }
 
 function isSpecificEditRequest(text) {
   if (!text) return false;
   const t = text.toLowerCase().trim();
-  return /\b(edit|change|modify|badal|badlo|kar do|kardo|bana do|banado|color|red|blue|green|black|white|yellow|pink|background|sunset|night|day|sky|anime|sketch|cartoon|3d|hd|dark|light|remove|add|hatao|lagao)\b/i.test(t);
+  return /\b(edit|change|modify|badal|badlo|kar do|kardo|bana do|banado|color|red|blue|green|black|white|yellow|pink|background|sunset|night|day|sky|anime|sketch|cartoon|3d|hd|dark|light|remove|add|hatao|lagao|amount|price|number)\b/i.test(t);
 }
 
 // ── Ultra-Realistic HD Image Generation (Flux.1 / SDXL) ──────────────────────
@@ -437,6 +444,48 @@ Task: Explain what is in the image and reply in natural, helpful Roman Urdu (usi
 
 import { decryptWhatsAppMedia } from './decryptor.mjs';
 import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
+
+// ── Browser / Direct Image Extraction ─────────────────────────────────────────
+async function extractImageBase64(msg) {
+  const data = msg._data || msg;
+  const directPath = data.directPath || msg.directPath;
+  const mediaKey = data.mediaKey || msg.mediaKey;
+
+  // 🚀 Method 1: Instant Direct WhatsApp CDN Fetch & Local Decryption (<100ms)
+  if (directPath && mediaKey) {
+    try {
+      const cdnUrl = `https://mmg.whatsapp.net${directPath}`;
+      const response = await fetch(cdnUrl, {
+        headers: {
+          'User-Agent': 'WhatsApp/2.24.12.54 i',
+          'Origin': 'https://web.whatsapp.com',
+          'Referer': 'https://web.whatsapp.com/'
+        }
+      });
+      if (response.ok) {
+        const encryptedBuf = Buffer.from(await response.arrayBuffer());
+        const decryptedBuf = decryptWhatsAppMedia(encryptedBuf, mediaKey, 'image');
+        if (decryptedBuf && decryptedBuf.length > 0) {
+          log(`⚡ Instant Direct CDN Decryption (Image): ${decryptedBuf.length} bytes!`, 'success');
+          return { data: decryptedBuf.toString('base64'), mimetype: data.mimetype || 'image/jpeg' };
+        }
+      }
+    } catch(cdnErr) {
+      log(`Image CDN fallback: ${cdnErr.message}`, 'warn');
+    }
+  }
+
+  // 🛠️ Method 2: Standard downloadMedia fallback
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const m = await msg.downloadMedia();
+      if (m && m.data) return { data: m.data, mimetype: m.mimetype || 'image/jpeg' };
+    } catch(e) {}
+    await new Promise(r => setTimeout(r, 400));
+  }
+
+  return null;
+}
 
 // ── Browser / Direct Audio Extraction ─────────────────────────────────────────
 async function extractAudioBase64(msg) {
@@ -958,7 +1007,7 @@ function createClient() {
           isImageMessage = true;
           log(`📸 Photo received from +${senderNumber} (${senderName}). Analyzing image content...`, 'info');
           try {
-            const media = await msg.downloadMedia();
+            const media = await extractImageBase64(msg);
             if (media && media.data) {
               const imgBuffer = Buffer.from(media.data, 'base64');
               const visionExplanation = await analyzeIncomingImage(imgBuffer, media.mimetype || 'image/jpeg', userText, senderName);
