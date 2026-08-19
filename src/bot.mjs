@@ -180,13 +180,13 @@ function isDetailRequest(text) {
   return /\b(detail|details|tafseel|mukammal|poora|poori|explain|wazahat|features|list|tareeqa|process|pricing|prices|rate|rates|package|packages|portfolio|services|kaise banta|kaise hoga|kya kya|kya shamil|step by step|full|sab batao|poori info|poori information)\b/i.test(t);
 }
 
-async function getAIReply(chatId, userText, senderName, isVoice = false) {
+async function getAIReply(chatId, userText, senderName, isVoice = false, messagesList = []) {
   const history = getHistory(chatId);
   const isNewConversation = history.length === 0;
   const isDetailed = isDetailRequest(userText);
 
-  // 🎯 First Turn Greeting Response Only
-  if (isNewConversation && isGreeting(userText)) {
+  // 🎯 First Turn Greeting Response Only (when single greeting)
+  if (isNewConversation && isGreeting(userText) && (!messagesList || messagesList.length <= 1)) {
     const clean = userText.trim().toLowerCase();
     let greet = "Wa Alaikum Assalam! Kaise hain aap? Ji bataiye main aapki kya madad kar sakta hoon? 😊";
     if (clean.startsWith('hi') || clean.startsWith('hello') || clean.startsWith('hey')) {
@@ -207,23 +207,28 @@ async function getAIReply(chatId, userText, senderName, isVoice = false) {
   let modeInstruction = '';
   if (isVoice) {
     modeInstruction = `VOICE NOTE MODE: You are speaking aloud as Arham's friendly AI voice note on WhatsApp. Reply in natural, conversational Pakistani Urdu script (اردو رسم الخط) using male grammar (کر سکتا ہوں).
-${isDetailed ? 'The user asked for full details in voice. Provide a comprehensive, full, detailed voice explanation covering all aspects clearly without cutting off.' : 'Keep it concise and natural (1-3 sentences).'}
+${isDetailed ? 'The user asked for full details in voice. Provide a comprehensive, in-depth, step-by-step spoken explanation covering all features, packages, pricing, timeline, and process (duration between 2 to 5 minutes, approximately 300 to 650 words). IMPORTANT: Keep it detailed but NEVER exceed 5 minutes (maximum 750 words).' : 'Keep it concise and natural (1-3 sentences).'}
 ${!isNewConversation ? 'CRITICAL: Conversation is ALREADY ongoing. DO NOT say Salam, DO NOT ask hal-chal. Speak the answer directly.' : ''}
-NEVER use markdown symbols.`;
+NEVER use markdown symbols, bullets, or asterisks.`;
   } else {
     modeInstruction = `TEXT CHAT MODE: Reply in natural Pakistani Roman Urdu using male grammar (kar sakta hoon).
-${isDetailed ? 'The user explicitly asked for FULL DETAILS/EXPLANATION. Provide a complete, thorough, unbroken breakdown with all features, pricing, timeline, and process. Never cut off or end abruptly.' : 'Keep it short, simple, and natural (1-3 conversational sentences). Do not dump long lists unless asked.'}
+${isDetailed ? 'The user explicitly asked for FULL DETAILS/EXPLANATION. Provide a complete, thorough, unbroken breakdown with all features, pricing, timeline, and process. Never cut off or end abruptly.' : 'Keep it clear, simple, and natural (1-3 conversational sentences). Do not dump long lists unless asked.'}
 ${!isNewConversation ? 'CRITICAL: Conversation is ALREADY ongoing. DO NOT say Salam, DO NOT say Kaise hain aap, DO NOT introduce yourself. Answer directly.' : ''}
 DO NOT use markdown symbols like #, ##, ###, *, **, _, or bullets.`;
+  }
+
+  let finalUserPrompt = userText;
+  if (messagesList && messagesList.length > 1) {
+    finalUserPrompt = `The user sent multiple sequential messages in one go:\n${messagesList.map((m, i) => `Message ${i + 1}: "${m}"`).join('\n')}\n\nTask: Understand ALL messages carefully and give a single unified, complete answer addressing EVERY single question and point in order. Do NOT miss any question.`;
   }
 
   const messages = [
     { role: 'system', content: `${SYSTEM_PROMPT}${ownerStyle}\n\n${modeInstruction}` },
     ...history,
-    { role: 'user', content: userText },
+    { role: 'user', content: finalUserPrompt },
   ];
 
-  const maxTokens = isDetailed ? 2500 : 600;
+  const maxTokens = (isDetailed || (messagesList && messagesList.length > 1)) ? 3000 : 800;
   const start = Date.now();
 
   // 1. Primary: GPT-OSS 20B (Ultra-fast, complete generation)
@@ -490,8 +495,14 @@ function cleanTextForSpeech(text) {
 
 // ── Convert to Urdu Script for 100% Crystal Clear Uzma Voice ─────────────────
 async function prepareSpeechScript(text) {
-  const clean = cleanTextForSpeech(text);
+  let clean = cleanTextForSpeech(text);
   if (!clean) return clean;
+
+  // Max 5 minutes of speech cap (~3,500 characters / 700 words)
+  if (clean.length > 3500) {
+    const lastPeriod = clean.lastIndexOf('.', 3500);
+    clean = clean.substring(0, lastPeriod > 1000 ? lastPeriod + 1 : 3500);
+  }
 
   const isUrduScript = /[\u0600-\u06FF]/.test(clean);
   if (isUrduScript) return clean;
@@ -507,7 +518,7 @@ async function prepareSpeechScript(text) {
         },
         { role: 'user', content: clean }
       ],
-      max_tokens: 1500,
+      max_tokens: 3500,
       temperature: 0.2
     });
     const script = res.choices[0]?.message?.content?.replace(/<think>[\s\S]*?(<\/think>|$)/gi, '').trim();
@@ -1091,20 +1102,40 @@ function createClient() {
           }
         }
 
-        // ⏳ E. Text & Voice 30-Second Human-in-the-Loop Smart Buffer
+        // ⏳ E. Text & Voice 30-Second Human-in-the-Loop Smart Buffer (Multi-Message Aggregation)
         if (pendingReplies.has(msg.from)) {
-          clearTimeout(pendingReplies.get(msg.from).timerId);
+          const pending = pendingReplies.get(msg.from);
+          clearTimeout(pending.timerId);
+          pending.messages.push(userText);
+          if (isVoiceMessage) pending.isVoiceMessage = true;
+          pending.senderName = senderName || pending.senderName;
+          pending.senderNumber = senderNumber || pending.senderNumber;
+
+          log(`⏳ [30s Buffer] Client +${senderNumber} sent message #${pending.messages.length}: "${userText.substring(0, 40)}". Resetting 30s timer...`, 'info');
+
+          pending.timerId = setTimeout(async () => {
+            const currentPending = pendingReplies.get(msg.from);
+            pendingReplies.delete(msg.from);
+            const allMsgs = currentPending ? currentPending.messages : [userText];
+            const combinedText = allMsgs.join('\n');
+            log(`🤖 30s elapsed. Bot is answering all ${allMsgs.length} messages from +${senderNumber}...`, 'info');
+            await executeAIReply(msg.from, combinedText, pending.senderName, pending.senderNumber, pending.isVoiceMessage, allMsgs);
+          }, 30000); // 30 seconds
+
+        } else {
+          log(`⏳ [30s Buffer] Client +${senderNumber} sent message #1: "${userText.substring(0, 40)}". Waiting 30s for Arham's manual reply...`, 'info');
+          const messages = [userText];
+          const timerId = setTimeout(async () => {
+            const currentPending = pendingReplies.get(msg.from);
+            pendingReplies.delete(msg.from);
+            const allMsgs = currentPending ? currentPending.messages : messages;
+            const combinedText = allMsgs.join('\n');
+            log(`🤖 30s elapsed with no manual reply from Arham. Bot is answering all ${allMsgs.length} messages from +${senderNumber}...`, 'info');
+            await executeAIReply(msg.from, combinedText, senderName, senderNumber, isVoiceMessage, allMsgs);
+          }, 30000); // 30 seconds
+
+          pendingReplies.set(msg.from, { timerId, messages, senderName, senderNumber, isVoiceMessage });
         }
-
-        log(`⏳ [30s Buffer] Client +${senderNumber} sent message. Waiting 30s for Arham's manual reply...`, 'info');
-
-        const timerId = setTimeout(async () => {
-          pendingReplies.delete(msg.from);
-          log(`🤖 30s elapsed with no manual reply from Arham. Bot is responding to +${senderNumber}...`, 'info');
-          await executeAIReply(msg.from, userText, senderName, senderNumber, isVoiceMessage);
-        }, 30000); // 30 seconds
-
-        pendingReplies.set(msg.from, { timerId, userText, senderName, senderNumber, isVoiceMessage });
 
       } finally {
         chatLocks.delete(msg.from);
@@ -1118,10 +1149,10 @@ function createClient() {
   client.on('message', handleIncomingMessage);
   client.on('message_create', handleIncomingMessage);
 
-  async function executeAIReply(chatId, userText, senderName, senderNumber, isVoiceMessage) {
+  async function executeAIReply(chatId, userText, senderName, senderNumber, isVoiceMessage, messagesList = []) {
     try {
       const currentTs = new Date().toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit' });
-      const reply = await getAIReply(chatId, userText.trim(), senderName, isVoiceMessage);
+      const reply = await getAIReply(chatId, userText.trim(), senderName, isVoiceMessage, messagesList);
 
       if (isVoiceMessage) {
         // 🎙️ VOICE TO VOICE ONLY: Send ONLY Native Opus Voice Note
