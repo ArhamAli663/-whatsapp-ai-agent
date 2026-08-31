@@ -1,0 +1,3 @@
+# nixpacks.toml - Install ffmpeg system dependency on Railway
+[phases.setup]
+nixPkgs = ["ffmpeg"]
