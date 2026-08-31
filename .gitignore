@@ -2,8 +2,15 @@ node_modules/
 wweb_session/
 .wwebjs_cache/
 session/
+auth_info_baileys/
+data/
 *.log
 .env
 *.mp3
 *.ogg
 *.wav
+*.tmp
+test*.mjs
+check*.mjs
+railway*.mjs
+*.DELETE.*
