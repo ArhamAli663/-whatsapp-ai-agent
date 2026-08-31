@@ -237,10 +237,13 @@ export function cleanWhatsAppText(text) {
   if (!text) return '';
   return text
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/```[\s\S]*?```/g, '')
     .replace(/^#+\s+/gm, '') // Remove ###, ##, # headings
     .replace(/\|/g, ' ') // Remove table pipes
     .replace(/^[-]{3,}$/gm, '') // Remove --- dividers
+    .replace(/^[*\-]\s+/gm, '• ') // Replace list asterisks/hyphens with clean bullets
+    .replace(/\*\*\*([^\n*]+?)\*\*\*/g, '*$1*') // Convert ***text*** -> *text*
+    .replace(/\*\*([^\n*]+?)\*\*/g, '*$1*') // Convert **text** -> *text* (Native WhatsApp Bold)
+    .replace(/\*{2,}/g, '') // Remove any accidental double asterisks
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -249,7 +252,7 @@ export function cleanWhatsAppText(text) {
 export async function generateResponse(chatId, userMessageText, apiKeyOverride = null) {
   const session = getChatSession(chatId);
 
-  const enrichedInstructions = SYSTEM_INSTRUCTIONS + '\n\nIMPORTANT CONVERSATIONAL RULES:\n- Answer ANY topic (e.g. C++, Python, Java, coding, AI, tech, general knowledge) in thorough, full, complete, and exhaustive detail in natural Roman Urdu or Urdu.\n- NEVER cut off mid-sentence or stop early; provide complete and comprehensive explanations.\n- Do NOT use "#", "|", or markdown tables in the reply — use clean natural text with emojis and bullet points.\n- If asked for voice or audio, explain naturally and clearly as if speaking in a real conversation.\n- Business Pricing: Website (15,000 PKR), Mobile App (20,000 PKR), AI Chatbot (5,000 PKR).';
+  const enrichedInstructions = SYSTEM_INSTRUCTIONS + '\n\nIMPORTANT CHATGPT-STYLE CONVERSATIONAL & FORMATTING RULES:\n- Answer ANY topic (e.g. C++, Python, Java, coding, AI, tech, general knowledge) in deep, complete, structured detail just like ChatGPT in natural Roman Urdu or Urdu.\n- NEVER use double asterisks like **word** — ALWAYS use single asterisks like *Bold Word:* for headings/emphasis on WhatsApp.\n- Use clean bullet points (•) and friendly emojis.\n- NEVER use "#", "|", or markdown tables in the reply.\n- NEVER cut off mid-sentence; provide complete, well-organized explanations from start to finish.\n- Business Pricing: Website (15,000 PKR), Mobile App (20,000 PKR), AI Chatbot (5,000 PKR).';
 
   // 1. Try Groq AI (Ultra-fast GPT-OSS 120B / 20B / Qwen 27B)
   if (groq) {
