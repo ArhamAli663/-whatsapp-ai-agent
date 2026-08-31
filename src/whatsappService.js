@@ -346,27 +346,35 @@ export async function connectWhatsApp(phoneNumberOverride = null, authModeOverri
         return;
       }
 
-      // ── IF VOICE REQUESTED OR VOICE NOTE RECEIVED ➔ SEND VOICE PTT NOTE ──
+      // ── IF VOICE REQUESTED OR VOICE NOTE RECEIVED ➔ SEND VOICE PTT NOTE ONLY ──
       if (wantsVoice) {
         addLog('info', `🎙️ Generating WhatsApp Voice Note for +${senderPhone}...`);
+        let voiceSent = false;
         try {
-          const voiceBuffer = await generateVoiceBuffer(aiReply);
-          if (voiceBuffer && voiceBuffer.length > 500) {
+          const voiceData = await generateVoiceBuffer(aiReply);
+          if (voiceData && voiceData.buffer && voiceData.buffer.length > 500) {
             await sock.sendMessage(senderJid, {
-              audio: voiceBuffer,
-              mimetype: 'audio/mp4',
-              ptt: true // Real WhatsApp Voice Note waveform
+              audio: voiceData.buffer,
+              mimetype: voiceData.mimetype,
+              ptt: true // Real WhatsApp Voice Note with waveform
             });
-            addLog('message_out', `🎙️ Sent WhatsApp Voice Note (PTT) to +${senderPhone}`);
+            voiceSent = true;
+            addLog('message_out', `🎙️ Sent WhatsApp Voice Note (PTT) ONLY to +${senderPhone}`);
           }
         } catch (voiceErr) {
-          addLog('warning', `Voice Note fallback to text: ${voiceErr.message}`);
+          addLog('warning', `Voice generation fallback: ${voiceErr.message}`);
         }
-      }
 
-      // Always send the clear text response too
-      await sock.sendMessage(senderJid, { text: aiReply });
-      addLog('message_out', `Sent AI reply to +${senderPhone}: "${aiReply.substring(0, 70)}..."`, { to: senderPhone, text: aiReply });
+        // Only send text as emergency fallback if voice generation failed
+        if (!voiceSent) {
+          await sock.sendMessage(senderJid, { text: aiReply });
+          addLog('message_out', `Sent fallback text reply to +${senderPhone}: "${aiReply.substring(0, 70)}..."`);
+        }
+      } else {
+        // Text message only for regular text inquiries
+        await sock.sendMessage(senderJid, { text: aiReply });
+        addLog('message_out', `Sent AI reply to +${senderPhone}: "${aiReply.substring(0, 70)}..."`, { to: senderPhone, text: aiReply });
+      }
 
       try { await sock.sendPresenceUpdate('paused', senderJid); } catch (e) {}
 

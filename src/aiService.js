@@ -1,6 +1,10 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import Groq from 'groq-sdk';
 import { CONFIG, SYSTEM_INSTRUCTIONS } from './config.js';
+import ffmpeg from 'fluent-ffmpeg';
+import ffmpegPath from '@ffmpeg-installer/ffmpeg';
+import fs from 'fs';
+import path from 'path';
 
 // Conversation memory
 const chatSessions = new Map();
@@ -55,13 +59,20 @@ export async function transcribeVoice(audioBuffer, mimeType = 'audio/ogg') {
   }
 }
 
-// ── NATURAL VOICE NOTE AUDIO GENERATOR (PTT) ──
+try {
+  ffmpeg.setFfmpegPath(ffmpegPath.path);
+} catch(e) {}
+
+// ── NATURAL VOICE NOTE AUDIO GENERATOR (CONVERTS TO GENUINE WHATSAPP OPUS) ──
 export async function generateVoiceBuffer(text) {
   if (!text || !text.trim()) return null;
 
   const clean = text
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/<[^>]*>/g, '')
-    .replace(/[*_~#]/g, '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/^#+\s+/gm, '')
+    .replace(/[*_~#|]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 
@@ -82,8 +93,8 @@ export async function generateVoiceBuffer(text) {
   const isUrdu = /[\u0600-\u06FF]/.test(clean) || /(hai|hain|kya|aap|main|hoon|karein|batao|shukriya|assalam|walaikum|urdu|website|kaise|python|zaban)/i.test(clean);
   const lang = isUrdu ? 'ur' : 'en';
 
-  const audioBuffers = [];
-  for (const chunk of chunks.slice(0, 18)) {
+  // Fetch all TTS chunks in parallel for maximum speed (<1.5s)
+  const chunkPromises = chunks.slice(0, 12).map(async (chunk) => {
     try {
       const encoded = encodeURIComponent(chunk);
       const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=${lang}&client=tw-ob`;
@@ -92,15 +103,49 @@ export async function generateVoiceBuffer(text) {
       });
       if (res.ok) {
         const ab = await res.arrayBuffer();
-        audioBuffers.push(Buffer.from(ab));
+        return Buffer.from(ab);
       }
     } catch (e) {
       console.warn('[TTS Chunk Error]:', e.message);
     }
-  }
+    return null;
+  });
+
+  const results = await Promise.all(chunkPromises);
+  const audioBuffers = results.filter(Boolean);
 
   if (audioBuffers.length === 0) return null;
-  return Buffer.concat(audioBuffers);
+  const combinedMp3 = Buffer.concat(audioBuffers);
+
+  // Convert MP3 to WhatsApp native OGG Opus audio
+  const tempMp3 = path.resolve(`temp_${Date.now()}_${Math.random().toString(36).substring(7)}.mp3`);
+  const tempOgg = path.resolve(`temp_${Date.now()}_${Math.random().toString(36).substring(7)}.ogg`);
+
+  try {
+    fs.writeFileSync(tempMp3, combinedMp3);
+    await new Promise((resolve, reject) => {
+      ffmpeg(tempMp3)
+        .toFormat('ogg')
+        .audioCodec('libopus')
+        .audioChannels(1)
+        .audioFrequency(48000)
+        .outputOptions(['-c:a libopus', '-b:a 64k', '-vbr on', '-application voip'])
+        .save(tempOgg)
+        .on('end', resolve)
+        .on('error', reject);
+    });
+
+    if (fs.existsSync(tempOgg)) {
+      const oggBuffer = fs.readFileSync(tempOgg);
+      try { fs.unlinkSync(tempMp3); fs.unlinkSync(tempOgg); } catch(e){}
+      return { buffer: oggBuffer, mimetype: 'audio/ogg; codecs=opus' };
+    }
+  } catch (err) {
+    console.warn('[FFmpeg Opus Error, fallback to mp3]:', err.message);
+    try { if (fs.existsSync(tempMp3)) fs.unlinkSync(tempMp3); if (fs.existsSync(tempOgg)) fs.unlinkSync(tempOgg); } catch(e){}
+  }
+
+  return { buffer: combinedMp3, mimetype: 'audio/mp4' };
 }
 
 // ── RICH LOCAL FALLBACK ──
@@ -128,11 +173,23 @@ function generateSmartLocalReply(chatId, userMessageText) {
   return 'Ji bilkul! Main Arham ka AI Assistant hoon. Main aapke har sawal ka mukammal jawab de sakta hoon aur hum Website, Mobile App aur AI Chatbots develop karte hain. Aapko kis bare mein mazeed janna hai? 🤝';
 }
 
+export function cleanWhatsAppText(text) {
+  if (!text) return '';
+  return text
+    .replace(/<think>[\s\S]*?<\/think>/gi, '')
+    .replace(/```[\s\S]*?```/g, '')
+    .replace(/^#+\s+/gm, '') // Remove ###, ##, # headings
+    .replace(/\|/g, ' ') // Remove table pipes
+    .replace(/^[-]{3,}$/gm, '') // Remove --- dividers
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 // ── MAIN AI RESPONSE GENERATION ──
 export async function generateResponse(chatId, userMessageText, apiKeyOverride = null) {
   const session = getChatSession(chatId);
 
-  const enrichedInstructions = SYSTEM_INSTRUCTIONS + '\n\nIMPORTANT CONVERSATIONAL & GENERAL KNOWLEDGE RULES:\n- You are an expert AI assistant who thoroughly answers ANY topic (such as Python, programming, web dev, AI, tech, general questions) in natural Roman Urdu or Urdu.\n- Do NOT just give a fixed sales pitch if the user asks a technical or educational question — answer their question thoroughly first!\n- If asked for voice or audio, explain naturally and clearly.\n- Business Pricing: Website (15,000 PKR), Mobile App (20,000 PKR), AI Chatbot (5,000 PKR).';
+  const enrichedInstructions = SYSTEM_INSTRUCTIONS + '\n\nIMPORTANT CONVERSATIONAL RULES:\n- Answer ANY topic (e.g. Python, coding, AI, tech, general knowledge) in thorough, natural Roman Urdu or Urdu.\n- Do NOT use "#", "|", or markdown tables in the reply — use clean natural text with emojis and bullet points.\n- If asked for voice or audio, speak naturally and clearly.\n- Business Pricing: Website (15,000 PKR), Mobile App (20,000 PKR), AI Chatbot (5,000 PKR).';
 
   // 1. Try Groq AI (Ultra-fast GPT-OSS 120B / 20B / Qwen 27B)
   if (groq) {
@@ -157,7 +214,7 @@ export async function generateResponse(chatId, userMessageText, apiKeyOverride =
 
         let reply = completion.choices[0]?.message?.content?.trim();
         if (reply) {
-          reply = reply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+          reply = cleanWhatsAppText(reply);
           updateChatHistory(chatId, 'user', userMessageText);
           updateChatHistory(chatId, 'model', reply);
           return reply;
@@ -176,14 +233,15 @@ export async function generateResponse(chatId, userMessageText, apiKeyOverride =
       try {
         const model = genAI.getGenerativeModel({
           model: modelName,
-          systemInstruction: SYSTEM_INSTRUCTIONS,
-          generationConfig: { temperature: 0.7, maxOutputTokens: 300 }
+          systemInstruction: enrichedInstructions,
+          generationConfig: { temperature: 0.7, maxOutputTokens: 600 }
         });
         const chat = model.startChat({ history: session.history });
         const result = await chat.sendMessage(userMessageText);
         const response = await result.response;
-        const botReply = response.text() ? response.text().trim() : null;
+        let botReply = response.text() ? response.text().trim() : null;
         if (botReply) {
+          botReply = cleanWhatsAppText(botReply);
           updateChatHistory(chatId, 'user', userMessageText);
           updateChatHistory(chatId, 'model', botReply);
           return botReply;
@@ -194,8 +252,8 @@ export async function generateResponse(chatId, userMessageText, apiKeyOverride =
     }
   }
 
-  // 3. Fallback to smart local logic
-  const localReply = generateSmartLocalReply(chatId, userMessageText);
+  // 3. Fallback to rich local logic
+  const localReply = cleanWhatsAppText(generateSmartLocalReply(chatId, userMessageText));
   updateChatHistory(chatId, 'user', userMessageText);
   updateChatHistory(chatId, 'model', localReply);
   return localReply;
