@@ -39,7 +39,7 @@ function updateChatHistory(chatId, role, text) {
   }
 }
 
-// ── GROQ WHISPER VOICE TRANSCRIPTION ──
+// ── GROQ WHISPER VOICE TRANSCRIPTION (HIGH-ACCURACY NOISE & ACCENT ADAPTATION) ──
 export async function transcribeVoice(audioBuffer, mimeType = 'audio/ogg') {
   if (!groq) {
     console.warn('[Voice] Groq API key missing for Whisper transcription.');
@@ -50,13 +50,24 @@ export async function transcribeVoice(audioBuffer, mimeType = 'audio/ogg') {
     const transcription = await groq.audio.transcriptions.create({
       file,
       model: 'whisper-large-v3',
-      language: 'ur', // Supports Urdu, Roman Urdu & English auto-mix
-      temperature: 0.0,
+      prompt: 'Urdu, Roman Urdu, Pakistani accent, noisy audio, English tech words: Python, Java, C++, JavaScript, Flutter, Website, App, AI Chatbot, Coding, Arham, Course, Price, Details, Software, Sikhao, Batao, Project, Rate, Frontend, Backend.',
+      temperature: 0.2,
+      response_format: 'json',
     });
     return transcription?.text ? transcription.text.trim() : null;
   } catch (err) {
     console.error('[Groq Whisper Error]:', err.message);
-    return null;
+    try {
+      const file = new File([audioBuffer], 'voice_note.ogg', { type: mimeType });
+      const fallback = await groq.audio.transcriptions.create({
+        file,
+        model: 'whisper-large-v3',
+        temperature: 0.0,
+      });
+      return fallback?.text ? fallback.text.trim() : null;
+    } catch (e) {
+      return null;
+    }
   }
 }
 
@@ -68,17 +79,20 @@ try {
 export async function generateVoiceBuffer(text) {
   if (!text || !text.trim()) return null;
 
-  const clean = text
+  // Clean text specifically for natural, human-like voice synthesis
+  let speechText = text
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/<[^>]*>/g, '')
     .replace(/```[\s\S]*?```/g, '')
+    .replace(/`[^`]*`/g, '')
+    .replace(/<[^>]*>/g, '')
     .replace(/^#+\s+/gm, '')
     .replace(/[*_~#|]/g, ' ')
+    .replace(/https?:\/\/\S+/g, '')
     .replace(/\s+/g, ' ')
     .trim();
 
   // Cap to ~5 minutes of speech (approx 3,500 characters)
-  const speechText = clean.length > 3500 ? clean.substring(0, 3500) : clean;
+  if (speechText.length > 3500) speechText = speechText.substring(0, 3500);
 
   const tempMp3 = path.resolve(`temp_${Date.now()}_${Math.random().toString(36).substring(7)}.mp3`);
   const tempOgg = path.resolve(`temp_${Date.now()}_${Math.random().toString(36).substring(7)}.ogg`);
@@ -88,12 +102,12 @@ export async function generateVoiceBuffer(text) {
     const isEnglishOnly = /^[a-zA-Z0-9\s.,!?'"()_@#$%&*+-]+$/.test(speechText) && !/(hai|hain|kya|aap|main|hoon|karein|batao|shukriya|assalam|walaikum|urdu)/i.test(speechText);
     const voiceName = isEnglishOnly ? 'en-IN-NeerjaNeural' : 'ur-PK-UzmaNeural';
 
-    // Split speechText into ~600 character chunks to support up to 5-minute explanations seamlessly
+    // Split speechText into ~400 character natural sentence chunks
     const rawParts = speechText.split(/(?<=[.!?،\n])/g);
     const textChunks = [];
     let cur = '';
     for (const p of rawParts) {
-      if ((cur + ' ' + p).length < 600) {
+      if ((cur + ' ' + p).length < 400) {
         cur = cur ? (cur + ' ' + p) : p;
       } else {
         if (cur) textChunks.push(cur.trim());
@@ -102,16 +116,19 @@ export async function generateVoiceBuffer(text) {
     }
     if (cur.trim()) textChunks.push(cur.trim());
 
+    const tts = new MsEdgeTTS();
+    await tts.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+
     const mp3Chunks = [];
     for (const chunk of textChunks.slice(0, 15)) {
       try {
-        const tts = new MsEdgeTTS();
-        await tts.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
         const readable = tts.toStream(chunk, { rate: '+0%', pitch: '+0Hz' });
         const stream = readable.audioStream || readable;
+        const cBufs = [];
         for await (const c of stream) {
-          mp3Chunks.push(c);
+          cBufs.push(c);
         }
+        mp3Chunks.push(Buffer.concat(cBufs));
       } catch (chunkErr) {
         console.warn('[EdgeTTS chunk error]:', chunkErr.message);
       }
@@ -126,7 +143,7 @@ export async function generateVoiceBuffer(text) {
           .audioCodec('libopus')
           .audioChannels(1)
           .audioFrequency(48000)
-          .outputOptions(['-c:a libopus', '-b:a 64k', '-vbr on', '-application voip'])
+          .outputOptions(['-c:a libopus', '-b:a 96k', '-vbr on', '-application voip'])
           .save(tempOgg)
           .on('end', resolve)
           .on('error', reject);
@@ -186,7 +203,7 @@ export async function generateVoiceBuffer(text) {
           .audioCodec('libopus')
           .audioChannels(1)
           .audioFrequency(48000)
-          .outputOptions(['-c:a libopus', '-b:a 64k', '-vbr on', '-application voip'])
+          .outputOptions(['-c:a libopus', '-b:a 96k', '-vbr on', '-application voip'])
           .save(tempOgg)
           .on('end', resolve)
           .on('error', reject);
@@ -252,7 +269,7 @@ export function cleanWhatsAppText(text) {
 export async function generateResponse(chatId, userMessageText, apiKeyOverride = null) {
   const session = getChatSession(chatId);
 
-  const enrichedInstructions = SYSTEM_INSTRUCTIONS + '\n\nIMPORTANT CHATGPT-STYLE CONVERSATIONAL & FORMATTING RULES:\n- Answer ANY topic (e.g. C++, Python, Java, coding, AI, tech, general knowledge) in deep, complete, structured detail just like ChatGPT in natural Roman Urdu or Urdu.\n- NEVER use double asterisks like **word** — ALWAYS use single asterisks like *Bold Word:* for headings/emphasis on WhatsApp.\n- Use clean bullet points (•) and friendly emojis.\n- NEVER use "#", "|", or markdown tables in the reply.\n- NEVER cut off mid-sentence; provide complete, well-organized explanations from start to finish.\n- Business Pricing: Website (15,000 PKR), Mobile App (20,000 PKR), AI Chatbot (5,000 PKR).';
+  const enrichedInstructions = SYSTEM_INSTRUCTIONS + '\n\nIMPORTANT CONVERSATIONAL & VOICE INTELLIGENCE RULES:\n- ACCURATE VOICE UNDERSTANDING: The user may send voice messages with slang, Pakistani accent, fast speech, background noise, or phonetic speech-to-text typos (e.g. "jawa" -> Java, "see plus" -> C++, "paythan" -> Python, "vapsite" -> Website, "bot" -> AI Chatbot). ALWAYS interpret their true intent intelligently and give the exact answer they are looking for!\n- CHATGPT-STYLE COMPLETE ANSWERS: Answer ANY topic in deep, complete, structured detail in natural Roman Urdu or Urdu.\n- NO DOUBLE ASTERISKS: On WhatsApp, use single asterisks like *Point Title:* for bolding (never use **word**).\n- Use clean bullet points (•) and friendly emojis.\n- NEVER use "#", "|", or markdown tables in the reply.\n- NEVER cut off mid-sentence; provide complete, well-organized explanations from start to finish.\n- Business Pricing: Website (15,000 PKR), Mobile App (20,000 PKR), AI Chatbot (5,000 PKR).';
 
   // 1. Try Groq AI (Ultra-fast GPT-OSS 120B / 20B / Qwen 27B)
   if (groq) {
