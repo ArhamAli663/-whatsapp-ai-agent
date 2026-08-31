@@ -94,12 +94,9 @@ try {
   ffmpeg.setFfmpegPath(ffmpegPath.path);
 } catch(e) {}
 
-// ── ULTRA-REALISTIC STUDIO HD FEMALE VOICE NOTE (UR-PK-UZMANEURAL) ──
-export async function generateVoiceBuffer(text) {
-  if (!text || !text.trim()) return null;
-
-  // Clean text specifically for natural, human-like voice synthesis
-  let speechText = text
+function prepareSpeechTextForClarity(text) {
+  if (!text) return '';
+  return text
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
     .replace(/```[\s\S]*?```/g, '')
     .replace(/`[^`]*`/g, '')
@@ -107,8 +104,37 @@ export async function generateVoiceBuffer(text) {
     .replace(/^#+\s+/gm, '')
     .replace(/[*_~#|]/g, ' ')
     .replace(/https?:\/\/\S+/g, '')
+    .replace(/C\+\+/gi, 'سی پلس پلس')
+    .replace(/\bFlutter\b/gi, 'فلٹر')
+    .replace(/\bPython\b/gi, 'پائتھن')
+    .replace(/\bJavaScript\b/gi, 'جاوا اسکرپٹ')
+    .replace(/\bJava\b/gi, 'جاوا')
+    .replace(/\bKotlin\b/gi, 'کوٹلن')
+    .replace(/\bReact\b/gi, 'ری ایکٹ')
+    .replace(/\bWebsite\b/gi, 'ویب سائٹ')
+    .replace(/\bWebsites\b/gi, 'ویب سائٹس')
+    .replace(/\bApps?\b/gi, 'ایپ')
+    .replace(/\bFrontend\b/gi, 'فرنٹ اینڈ')
+    .replace(/\bBackend\b/gi, 'بیک اینڈ')
+    .replace(/\bDatabase\b/gi, 'ڈیٹا بیس')
+    .replace(/\bAI\b/g, 'اے آئی')
+    .replace(/\bAPI\b/g, 'اے پی آئی')
+    .replace(/\bUI\b/g, 'یو آئی')
+    .replace(/\bUX\b/g, 'یو ایکس')
+    .replace(/\bPKR\b/gi, 'روپے')
+    .replace(/\b15,000\b/g, 'پندرہ ہزار')
+    .replace(/\b20,000\b/g, 'بیس ہزار')
+    .replace(/\b5,000\b/g, 'پانچ ہزار')
     .replace(/\s+/g, ' ')
     .trim();
+}
+
+// ── ULTRA-REALISTIC STUDIO HD FEMALE VOICE NOTE (UR-PK-UZMANEURAL) ──
+export async function generateVoiceBuffer(text) {
+  if (!text || !text.trim()) return null;
+
+  // Clean text specifically for natural, human-like voice synthesis
+  let speechText = prepareSpeechTextForClarity(text);
 
   // Cap to ~5 minutes of speech (approx 3,500 characters)
   if (speechText.length > 3500) speechText = speechText.substring(0, 3500);
@@ -121,12 +147,12 @@ export async function generateVoiceBuffer(text) {
     const isEnglishOnly = /^[a-zA-Z0-9\s.,!?'"()_@#$%&*+-]+$/.test(speechText) && !/(hai|hain|kya|aap|main|hoon|karein|batao|shukriya|assalam|walaikum|urdu)/i.test(speechText);
     const voiceName = isEnglishOnly ? 'en-IN-NeerjaNeural' : 'ur-PK-UzmaNeural';
 
-    // Split speechText into ~400 character natural sentence chunks
+    // Split speechText into ~350 character natural sentence chunks
     const rawParts = speechText.split(/(?<=[.!?،\n])/g);
     const textChunks = [];
     let cur = '';
     for (const p of rawParts) {
-      if ((cur + ' ' + p).length < 400) {
+      if ((cur + ' ' + p).length < 350) {
         cur = cur ? (cur + ' ' + p) : p;
       } else {
         if (cur) textChunks.push(cur.trim());
@@ -141,7 +167,7 @@ export async function generateVoiceBuffer(text) {
     const mp3Chunks = [];
     for (const chunk of textChunks.slice(0, 15)) {
       try {
-        const readable = tts.toStream(chunk, { rate: '+0%', pitch: '+0Hz' });
+        const readable = tts.toStream(chunk, { rate: '-4%', pitch: '+0Hz' });
         const stream = readable.audioStream || readable;
         const cBufs = [];
         for await (const c of stream) {
