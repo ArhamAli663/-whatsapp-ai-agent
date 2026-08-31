@@ -39,6 +39,21 @@ function updateChatHistory(chatId, role, text) {
   }
 }
 
+// ── VOICE TRANSCRIPTION PHONETIC NORMALIZER ──
+export function normalizeVoiceTranscript(text) {
+  if (!text) return '';
+  return text
+    .replace(/فلیڈر|فلیٹر|فلیٹڑ|فلیتر|فلیدر|fleeder|flider|fletter/gi, 'Flutter (فلٹر)')
+    .replace(/پائی\s*تھان|پائی\s*تھن|پائتھان|paython|paitan/gi, 'Python (پائتھن)')
+    .replace(/سی\s*پلس|سی\s*پلس\s*پلس|see\s*plus/gi, 'C++')
+    .replace(/جاوا\s*سکرپٹ|جاواسکرپٹ/gi, 'JavaScript')
+    .replace(/کوٹلن|کوٹ\s*لن|cotlin/gi, 'Kotlin')
+    .replace(/ری\s*ایکٹ|ریایکٹ/gi, 'React')
+    .replace(/چیٹ\s*باٹ|چٹ\s*باٹ|چٹباٹ|چیٹباٹ/gi, 'AI Chatbot')
+    .replace(/ویب\s*سائٹ|ویبسائٹ|ویپ\s*سائٹ|vapsite/gi, 'Website')
+    .trim();
+}
+
 // ── GROQ WHISPER VOICE TRANSCRIPTION (HIGH-ACCURACY NOISE & ACCENT ADAPTATION) ──
 export async function transcribeVoice(audioBuffer, mimeType = 'audio/ogg') {
   if (!groq) {
@@ -50,11 +65,13 @@ export async function transcribeVoice(audioBuffer, mimeType = 'audio/ogg') {
     const transcription = await groq.audio.transcriptions.create({
       file,
       model: 'whisper-large-v3',
-      prompt: 'Urdu, Roman Urdu, Pakistani accent, noisy audio, English tech words: Python, Java, C++, JavaScript, Flutter, Website, App, AI Chatbot, Coding, Arham, Course, Price, Details, Software, Sikhao, Batao, Project, Rate, Frontend, Backend.',
-      temperature: 0.2,
+      language: 'ur', // Strictly Urdu / Pakistani Accent
+      prompt: 'یہ پاکستانی اردو میں بات چیت ہے: فلٹر، پائتھن، جاوا، سی پلس پلس، ویب سائٹ، موبائل ایپ، اے آئی چیٹ باٹ، ارہم، قیمت، کورس، پروگرامنگ، سوفٹ ویئر، اینڈرائیڈ، ری ایکٹ۔',
+      temperature: 0.1,
       response_format: 'json',
     });
-    return transcription?.text ? transcription.text.trim() : null;
+    const rawText = transcription?.text ? transcription.text.trim() : null;
+    return rawText ? normalizeVoiceTranscript(rawText) : null;
   } catch (err) {
     console.error('[Groq Whisper Error]:', err.message);
     try {
@@ -62,9 +79,11 @@ export async function transcribeVoice(audioBuffer, mimeType = 'audio/ogg') {
       const fallback = await groq.audio.transcriptions.create({
         file,
         model: 'whisper-large-v3',
+        language: 'ur',
         temperature: 0.0,
       });
-      return fallback?.text ? fallback.text.trim() : null;
+      const rawText = fallback?.text ? fallback.text.trim() : null;
+      return rawText ? normalizeVoiceTranscript(rawText) : null;
     } catch (e) {
       return null;
     }
@@ -261,6 +280,8 @@ export function cleanWhatsAppText(text) {
     .replace(/\*\*\*([^\n*]+?)\*\*\*/g, '*$1*') // Convert ***text*** -> *text*
     .replace(/\*\*([^\n*]+?)\*\*/g, '*$1*') // Convert **text** -> *text* (Native WhatsApp Bold)
     .replace(/\*{2,}/g, '') // Remove any accidental double asterisks
+    .replace(/\b(namaste|namaskar|dhanyawad|dhanyavaad|kripya|kripaya|mitra|samasya|adhyayan|sangrakshan|prashn|uttar|swagat)\b/gi, '')
+    .replace(/(نمستے|نمسکار|دھنیہ واد|دھنیواد|کرپیا|سمسیا|ادھیان|سواگت)/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
@@ -269,7 +290,7 @@ export function cleanWhatsAppText(text) {
 export async function generateResponse(chatId, userMessageText, apiKeyOverride = null) {
   const session = getChatSession(chatId);
 
-  const enrichedInstructions = SYSTEM_INSTRUCTIONS + '\n\nIMPORTANT CONVERSATIONAL & VOICE INTELLIGENCE RULES:\n- ACCURATE VOICE UNDERSTANDING: The user may send voice messages with slang, Pakistani accent, fast speech, background noise, or phonetic speech-to-text typos (e.g. "jawa" -> Java, "see plus" -> C++, "paythan" -> Python, "vapsite" -> Website, "bot" -> AI Chatbot). ALWAYS interpret their true intent intelligently and give the exact answer they are looking for!\n- CHATGPT-STYLE COMPLETE ANSWERS: Answer ANY topic in deep, complete, structured detail in natural Roman Urdu or Urdu.\n- NO DOUBLE ASTERISKS: On WhatsApp, use single asterisks like *Point Title:* for bolding (never use **word**).\n- Use clean bullet points (•) and friendly emojis.\n- NEVER use "#", "|", or markdown tables in the reply.\n- NEVER cut off mid-sentence; provide complete, well-organized explanations from start to finish.\n- Business Pricing: Website (15,000 PKR), Mobile App (20,000 PKR), AI Chatbot (5,000 PKR).';
+  const enrichedInstructions = SYSTEM_INSTRUCTIONS + '\n\nIMPORTANT CONVERSATIONAL & LANGUAGE RULES:\n- STRICT PURE PAKISTANI URDU ONLY: Speak and write in 100% natural, polite, everyday Pakistani Urdu (پاکستانی اردو یا آسان رومن اردو). NEVER use any Hindi words or Indian phrasing (strictly NO namaste, dhanyawad, kripya, mitra, samasya, adhyayan, etc.). Always use standard Pakistani polite words: Assalam o Alaikum, Khushamdeed, Shukriya, Janab, Maloomat, Tafseelat, Mukammal.\n- ACCURATE VOICE UNDERSTANDING: The user sends voice messages in Pakistani Urdu. If words like "Flutter / فلیڈر / فلٹر" are mentioned, they mean Flutter cross-platform mobile framework. If "Python / پائتھن" is mentioned, they mean Python programming. Answer with deep, crystal-clear 5-minute technical details.\n- CHATGPT-STYLE COMPLETE ANSWERS: Provide well-structured, comprehensive, point-by-point complete explanations.\n- NATIVE WHATSAPP BOLD: Use single asterisks like *Point Title:* (NEVER double asterisks **).\n- Use clean bullet points (•) and friendly emojis.\n- NEVER use "#", "|", or markdown tables in the reply.\n- NEVER cut off mid-sentence; provide complete, well-organized explanations from start to finish.\n- Business Pricing: Website (15,000 PKR), Mobile App (20,000 PKR), AI Chatbot (5,000 PKR).';
 
   // 1. Try Groq AI (Ultra-fast GPT-OSS 120B / 20B / Qwen 27B)
   if (groq) {
