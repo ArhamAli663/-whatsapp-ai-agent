@@ -11,7 +11,7 @@ import QRCode from 'qrcode';
 import fs from 'fs';
 import path from 'path';
 import { CONFIG } from './config.js';
-import { generateResponse, transcribeVoice } from './aiService.js';
+import { generateResponse, transcribeVoice, generateVoiceBuffer } from './aiService.js';
 
 let sock = null;
 let reconnectTimer = null;
@@ -331,10 +331,11 @@ export async function connectWhatsApp(phoneNumberOverride = null, authModeOverri
         return;
       }
 
-      // ── 30 SECONDS ELAPSED WITHOUT ARHAM REPLY ➔ BOT AUTO-REPLIES ──
+      // ── 30 SECONDS ELAPSED ➔ BOT GENERATES AI RESPONSE ──
+      const wantsVoice = isAudio || /(voice|audio|awaaz|awaz|bol ke|batao voice|voice bhejo|vais|وائس)/i.test(userText);
       addLog('success', `🤖 30s elapsed without Arham reply (+${senderPhone}) — Bot generating AI reply...`);
 
-      try { await sock.sendPresenceUpdate('composing', senderJid); } catch (e) {}
+      try { await sock.sendPresenceUpdate(wantsVoice ? 'recording' : 'composing', senderJid); } catch (e) {}
 
       const aiReply = await generateResponse(senderJid, userText);
 
@@ -345,9 +346,27 @@ export async function connectWhatsApp(phoneNumberOverride = null, authModeOverri
         return;
       }
 
-      // Send WhatsApp AI Reply
+      // ── IF VOICE REQUESTED OR VOICE NOTE RECEIVED ➔ SEND VOICE PTT NOTE ──
+      if (wantsVoice) {
+        addLog('info', `🎙️ Generating WhatsApp Voice Note for +${senderPhone}...`);
+        try {
+          const voiceBuffer = await generateVoiceBuffer(aiReply);
+          if (voiceBuffer && voiceBuffer.length > 500) {
+            await sock.sendMessage(senderJid, {
+              audio: voiceBuffer,
+              mimetype: 'audio/mp4',
+              ptt: true // Real WhatsApp Voice Note waveform
+            });
+            addLog('message_out', `🎙️ Sent WhatsApp Voice Note (PTT) to +${senderPhone}`);
+          }
+        } catch (voiceErr) {
+          addLog('warning', `Voice Note fallback to text: ${voiceErr.message}`);
+        }
+      }
+
+      // Always send the clear text response too
       await sock.sendMessage(senderJid, { text: aiReply });
-      addLog('message_out', `Sent AI reply to +${senderPhone}: "${aiReply}"`, { to: senderPhone, text: aiReply });
+      addLog('message_out', `Sent AI reply to +${senderPhone}: "${aiReply.substring(0, 70)}..."`, { to: senderPhone, text: aiReply });
 
       try { await sock.sendPresenceUpdate('paused', senderJid); } catch (e) {}
 

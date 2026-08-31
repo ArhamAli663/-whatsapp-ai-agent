@@ -55,59 +55,116 @@ export async function transcribeVoice(audioBuffer, mimeType = 'audio/ogg') {
   }
 }
 
-// ── SMART LOCAL FALLBACK ──
+// ── NATURAL VOICE NOTE AUDIO GENERATOR (PTT) ──
+export async function generateVoiceBuffer(text) {
+  if (!text || !text.trim()) return null;
+
+  const clean = text
+    .replace(/<[^>]*>/g, '')
+    .replace(/[*_~#]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const sentences = clean.match(/[^.!?،\n]+[.!?،\n]*/g) || [clean];
+  const chunks = [];
+  let currentChunk = '';
+
+  for (const s of sentences) {
+    if ((currentChunk + ' ' + s).length < 180) {
+      currentChunk = currentChunk ? (currentChunk + ' ' + s) : s;
+    } else {
+      if (currentChunk) chunks.push(currentChunk.trim());
+      currentChunk = s;
+    }
+  }
+  if (currentChunk.trim()) chunks.push(currentChunk.trim());
+
+  const isUrdu = /[\u0600-\u06FF]/.test(clean) || /(hai|hain|kya|aap|main|hoon|karein|batao|shukriya|assalam|walaikum|urdu|website|kaise|python|zaban)/i.test(clean);
+  const lang = isUrdu ? 'ur' : 'en';
+
+  const audioBuffers = [];
+  for (const chunk of chunks.slice(0, 18)) {
+    try {
+      const encoded = encodeURIComponent(chunk);
+      const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=${lang}&client=tw-ob`;
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+      });
+      if (res.ok) {
+        const ab = await res.arrayBuffer();
+        audioBuffers.push(Buffer.from(ab));
+      }
+    } catch (e) {
+      console.warn('[TTS Chunk Error]:', e.message);
+    }
+  }
+
+  if (audioBuffers.length === 0) return null;
+  return Buffer.concat(audioBuffers);
+}
+
+// ── RICH LOCAL FALLBACK ──
 function generateSmartLocalReply(chatId, userMessageText) {
   const text = (userMessageText || '').toLowerCase().trim();
 
+  if (text.includes('python') || text.includes('پائیتھن') || text.includes('coding') || text.includes('programming')) {
+    return 'Python aik boht hi popular, powerful aur aasan programming language hai. Is ko seekhna boht easy hai kyun ke iska syntax English jesa hota hai. Python Web Development (Django/Flask), Artificial Intelligence, Machine Learning, Data Science, aur Automation bots banane mein sab se zyada use hoti hai. Agar aap Python seekhna chahte hain ya koi custom Python AI Project / Bot banwana chahte hain to hum aap ki mukammal madad kar sakte hain!';
+  }
   if (text.includes('salam') || text.includes('assalam') || text.includes('hello') || text.includes('hi')) {
-    return `Walaikum Assalam! 👋 Main Arham ka AI Assistant hoon. Hum Website Development (15,000 PKR), Mobile App (20,000 PKR), aur AI Chatbot (5,000 PKR) banate hain. Aapko kya chahiye?`;
+    return 'Walaikum Assalam! 👋 Main Arham ka AI Assistant hoon. Hum Website Development (15,000 PKR), Mobile App (20,000 PKR), aur AI Chatbot (5,000 PKR) banate hain. Aapko kis cheez ke bare mein janna hai ya kya project banwana hai?';
   }
   if (text.includes('website') || text.includes('web')) {
-    return `Zabardast! 🌐 Website Development 15,000 PKR se start hoti hai (Complete Modern Responsive Design + SEO). Aapki requirements kya hain?`;
+    return 'Zabardast! 🌐 Website Development 15,000 PKR se start hoti hai (Complete Modern Responsive Design + SEO). Aapki website ki kya requirements hain?';
   }
   if (text.includes('app') || text.includes('mobile')) {
-    return `Behtareen! 📱 Mobile App Development (Android & iOS) 20,000 PKR se start hoti hai. Aapko kis type ki application chahiye?`;
+    return 'Behtareen! 📱 Mobile App Development (Android & iOS) 20,000 PKR se start hoti hai. Aapko kis type ki application chahiye?';
   }
   if (text.includes('bot') || text.includes('chatbot') || text.includes('ai')) {
-    return `Superb! 🤖 WhatsApp & Web AI Chatbot 5,000 PKR mein banate hain jo 24/7 clients ko auto-reply deta hai. Aapke business ka naam kya hai?`;
+    return 'Superb! 🤖 WhatsApp & Web AI Chatbot 5,000 PKR mein banate hain jo 24/7 clients ko auto-reply deta hai. Aapke business ka naam kya hai?';
   }
   if (text.includes('price') || text.includes('rate') || text.includes('cost') || text.includes('kitne')) {
-    return `Hamari services aur rates yeh hain:\n- 🌐 Website Development: 15,000 PKR\n- 📱 Mobile App Development: 20,000 PKR\n- 🤖 AI Chatbot: 5,000 PKR\nAap konsi service mein interested hain?`;
+    return 'Hamari services aur rates yeh hain:\n- 🌐 Website Development: 15,000 PKR\n- 📱 Mobile App Development: 20,000 PKR\n- 🤖 AI Chatbot: 5,000 PKR\nAap konsi service mein interested hain?';
   }
-  return `Ji bilkul! Main Arham ka AI Assistant hoon. Hum Website, Mobile App aur AI Chatbots develop karte hain. Aapko kis project ke liye help chahiye? 🤝`;
+  return 'Ji bilkul! Main Arham ka AI Assistant hoon. Main aapke har sawal ka mukammal jawab de sakta hoon aur hum Website, Mobile App aur AI Chatbots develop karte hain. Aapko kis bare mein mazeed janna hai? 🤝';
 }
 
 // ── MAIN AI RESPONSE GENERATION ──
 export async function generateResponse(chatId, userMessageText, apiKeyOverride = null) {
   const session = getChatSession(chatId);
 
-  // 1. Try Groq AI (Ultra-fast Llama 3.3 70B & Llama 3.1)
+  const enrichedInstructions = SYSTEM_INSTRUCTIONS + '\n\nIMPORTANT CONVERSATIONAL & GENERAL KNOWLEDGE RULES:\n- You are an expert AI assistant who thoroughly answers ANY topic (such as Python, programming, web dev, AI, tech, general questions) in natural Roman Urdu or Urdu.\n- Do NOT just give a fixed sales pitch if the user asks a technical or educational question — answer their question thoroughly first!\n- If asked for voice or audio, explain naturally and clearly.\n- Business Pricing: Website (15,000 PKR), Mobile App (20,000 PKR), AI Chatbot (5,000 PKR).';
+
+  // 1. Try Groq AI (Ultra-fast GPT-OSS 120B / 20B / Qwen 27B)
   if (groq) {
-    try {
-      const messages = [
-        { role: 'system', content: SYSTEM_INSTRUCTIONS },
-        ...session.history.map(h => ({
-          role: h.role === 'model' ? 'assistant' : 'user',
-          content: h.parts[0]?.text || ''
-        })),
-        { role: 'user', content: userMessageText }
-      ];
+    const groqModels = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'];
+    for (const modelName of groqModels) {
+      try {
+        const messages = [
+          { role: 'system', content: enrichedInstructions },
+          ...session.history.map(h => ({
+            role: h.role === 'model' ? 'assistant' : 'user',
+            content: h.parts[0]?.text || ''
+          })),
+          { role: 'user', content: userMessageText }
+        ];
 
-      const completion = await groq.chat.completions.create({
-        model: 'llama-3.3-70b-versatile',
-        messages,
-        temperature: 0.7,
-        max_tokens: 300,
-      });
+        const completion = await groq.chat.completions.create({
+          model: modelName,
+          messages,
+          temperature: 0.7,
+          max_tokens: 600,
+        });
 
-      const reply = completion.choices[0]?.message?.content?.trim();
-      if (reply) {
-        updateChatHistory(chatId, 'user', userMessageText);
-        updateChatHistory(chatId, 'model', reply);
-        return reply;
+        let reply = completion.choices[0]?.message?.content?.trim();
+        if (reply) {
+          reply = reply.replace(/<think>[\s\S]*?<\/think>/gi, '').trim();
+          updateChatHistory(chatId, 'user', userMessageText);
+          updateChatHistory(chatId, 'model', reply);
+          return reply;
+        }
+      } catch (groqErr) {
+        console.warn(`[Groq Notice] ${modelName}:`, groqErr.message);
       }
-    } catch (groqErr) {
-      console.warn('[Groq Notice]:', groqErr.message);
     }
   }
 
