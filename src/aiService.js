@@ -3,6 +3,7 @@ import Groq from 'groq-sdk';
 import { CONFIG, SYSTEM_INSTRUCTIONS } from './config.js';
 import ffmpeg from 'fluent-ffmpeg';
 import ffmpegPath from '@ffmpeg-installer/ffmpeg';
+import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 import fs from 'fs';
 import path from 'path';
 
@@ -63,7 +64,7 @@ try {
   ffmpeg.setFfmpegPath(ffmpegPath.path);
 } catch(e) {}
 
-// ── NATURAL VOICE NOTE AUDIO GENERATOR (CONVERTS TO GENUINE WHATSAPP OPUS) ──
+// ── ULTRA-REALISTIC STUDIO HD FEMALE VOICE NOTE (UR-PK-UZMANEURAL) ──
 export async function generateVoiceBuffer(text) {
   if (!text || !text.trim()) return null;
 
@@ -76,82 +77,141 @@ export async function generateVoiceBuffer(text) {
     .replace(/\s+/g, ' ')
     .trim();
 
-  const sentences = clean.match(/[^.!?،\n]+[.!?،\n]*/g) || [clean];
-  const chunks = [];
-  let currentChunk = '';
+  // Cap to ~5 minutes of speech (approx 3,500 characters)
+  const speechText = clean.length > 3500 ? clean.substring(0, 3500) : clean;
 
-  for (const s of sentences) {
-    if ((currentChunk + ' ' + s).length < 180) {
-      currentChunk = currentChunk ? (currentChunk + ' ' + s) : s;
-    } else {
-      if (currentChunk) chunks.push(currentChunk.trim());
-      currentChunk = s;
-    }
-  }
-  if (currentChunk.trim()) chunks.push(currentChunk.trim());
-
-  const isUrdu = /[\u0600-\u06FF]/.test(clean) || /(hai|hain|kya|aap|main|hoon|karein|batao|shukriya|assalam|walaikum|urdu|website|kaise|python|zaban)/i.test(clean);
-  const lang = isUrdu ? 'ur' : 'en';
-
-  // Fetch all TTS chunks in parallel for maximum speed (<1.5s)
-  const chunkPromises = chunks.slice(0, 12).map(async (chunk) => {
-    try {
-      const encoded = encodeURIComponent(chunk);
-      const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=${lang}&client=tw-ob`;
-      const res = await fetch(url, {
-        headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
-      });
-      if (res.ok) {
-        const ab = await res.arrayBuffer();
-        return Buffer.from(ab);
-      }
-    } catch (e) {
-      console.warn('[TTS Chunk Error]:', e.message);
-    }
-    return null;
-  });
-
-  const results = await Promise.all(chunkPromises);
-  const audioBuffers = results.filter(Boolean);
-
-  if (audioBuffers.length === 0) return null;
-  const combinedMp3 = Buffer.concat(audioBuffers);
-
-  // Convert MP3 to WhatsApp native OGG Opus audio
   const tempMp3 = path.resolve(`temp_${Date.now()}_${Math.random().toString(36).substring(7)}.mp3`);
   const tempOgg = path.resolve(`temp_${Date.now()}_${Math.random().toString(36).substring(7)}.ogg`);
 
+  // 1. PRIMARY: MsEdgeTTS Studio HD Female Voice (ur-PK-UzmaNeural)
   try {
-    fs.writeFileSync(tempMp3, combinedMp3);
-    await new Promise((resolve, reject) => {
-      ffmpeg(tempMp3)
-        .toFormat('ogg')
-        .audioCodec('libopus')
-        .audioChannels(1)
-        .audioFrequency(48000)
-        .outputOptions(['-c:a libopus', '-b:a 64k', '-vbr on', '-application voip'])
-        .save(tempOgg)
-        .on('end', resolve)
-        .on('error', reject);
-    });
+    const isEnglishOnly = /^[a-zA-Z0-9\s.,!?'"()_@#$%&*+-]+$/.test(speechText) && !/(hai|hain|kya|aap|main|hoon|karein|batao|shukriya|assalam|walaikum|urdu)/i.test(speechText);
+    const voiceName = isEnglishOnly ? 'en-IN-NeerjaNeural' : 'ur-PK-UzmaNeural';
 
-    if (fs.existsSync(tempOgg)) {
-      const oggBuffer = fs.readFileSync(tempOgg);
-      try { fs.unlinkSync(tempMp3); fs.unlinkSync(tempOgg); } catch(e){}
-      return { buffer: oggBuffer, mimetype: 'audio/ogg; codecs=opus' };
+    // Split speechText into ~600 character chunks to support up to 5-minute explanations seamlessly
+    const rawParts = speechText.split(/(?<=[.!?،\n])/g);
+    const textChunks = [];
+    let cur = '';
+    for (const p of rawParts) {
+      if ((cur + ' ' + p).length < 600) {
+        cur = cur ? (cur + ' ' + p) : p;
+      } else {
+        if (cur) textChunks.push(cur.trim());
+        cur = p;
+      }
     }
-  } catch (err) {
-    console.warn('[FFmpeg Opus Error, fallback to mp3]:', err.message);
+    if (cur.trim()) textChunks.push(cur.trim());
+
+    const mp3Chunks = [];
+    for (const chunk of textChunks.slice(0, 15)) {
+      try {
+        const tts = new MsEdgeTTS();
+        await tts.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
+        const readable = tts.toStream(chunk, { rate: '+0%', pitch: '+0Hz' });
+        const stream = readable.audioStream || readable;
+        for await (const c of stream) {
+          mp3Chunks.push(c);
+        }
+      } catch (chunkErr) {
+        console.warn('[EdgeTTS chunk error]:', chunkErr.message);
+      }
+    }
+    const mp3Buf = Buffer.concat(mp3Chunks);
+
+    if (mp3Buf && mp3Buf.length > 500) {
+      fs.writeFileSync(tempMp3, mp3Buf);
+      await new Promise((resolve, reject) => {
+        ffmpeg(tempMp3)
+          .toFormat('ogg')
+          .audioCodec('libopus')
+          .audioChannels(1)
+          .audioFrequency(48000)
+          .outputOptions(['-c:a libopus', '-b:a 64k', '-vbr on', '-application voip'])
+          .save(tempOgg)
+          .on('end', resolve)
+          .on('error', reject);
+      });
+
+      if (fs.existsSync(tempOgg)) {
+        const oggBuffer = fs.readFileSync(tempOgg);
+        try { fs.unlinkSync(tempMp3); fs.unlinkSync(tempOgg); } catch(e){}
+        return { buffer: oggBuffer, mimetype: 'audio/ogg; codecs=opus' };
+      }
+    }
+  } catch (edgeErr) {
+    console.warn('[MsEdgeTTS Notice, trying fallback]:', edgeErr.message);
     try { if (fs.existsSync(tempMp3)) fs.unlinkSync(tempMp3); if (fs.existsSync(tempOgg)) fs.unlinkSync(tempOgg); } catch(e){}
   }
 
-  return { buffer: combinedMp3, mimetype: 'audio/mp4' };
+  // 2. FALLBACK: Parallel Google TTS Chunk Streamer
+  try {
+    const sentences = speechText.match(/[^.!?،\n]+[.!?،\n]*/g) || [speechText];
+    const chunks = [];
+    let currentChunk = '';
+
+    for (const s of sentences) {
+      if ((currentChunk + ' ' + s).length < 180) {
+        currentChunk = currentChunk ? (currentChunk + ' ' + s) : s;
+      } else {
+        if (currentChunk) chunks.push(currentChunk.trim());
+        currentChunk = s;
+      }
+    }
+    if (currentChunk.trim()) chunks.push(currentChunk.trim());
+
+    const isUrdu = /[\u0600-\u06FF]/.test(speechText) || /(hai|hain|kya|aap|main|hoon|karein|batao|shukriya|assalam|walaikum|urdu|website|kaise|python|zaban)/i.test(speechText);
+    const lang = isUrdu ? 'ur' : 'en';
+
+    const chunkPromises = chunks.slice(0, 15).map(async (chunk) => {
+      try {
+        const encoded = encodeURIComponent(chunk);
+        const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=${lang}&client=tw-ob`;
+        const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+        if (res.ok) {
+          const ab = await res.arrayBuffer();
+          return Buffer.from(ab);
+        }
+      } catch (e) {}
+      return null;
+    });
+
+    const results = await Promise.all(chunkPromises);
+    const audioBuffers = results.filter(Boolean);
+    if (audioBuffers.length > 0) {
+      const combinedMp3 = Buffer.concat(audioBuffers);
+      fs.writeFileSync(tempMp3, combinedMp3);
+      await new Promise((resolve, reject) => {
+        ffmpeg(tempMp3)
+          .toFormat('ogg')
+          .audioCodec('libopus')
+          .audioChannels(1)
+          .audioFrequency(48000)
+          .outputOptions(['-c:a libopus', '-b:a 64k', '-vbr on', '-application voip'])
+          .save(tempOgg)
+          .on('end', resolve)
+          .on('error', reject);
+      });
+      if (fs.existsSync(tempOgg)) {
+        const oggBuffer = fs.readFileSync(tempOgg);
+        try { fs.unlinkSync(tempMp3); fs.unlinkSync(tempOgg); } catch(e){}
+        return { buffer: oggBuffer, mimetype: 'audio/ogg; codecs=opus' };
+      }
+    }
+  } catch (err) {
+    console.warn('[TTS Fallback Error]:', err.message);
+    try { if (fs.existsSync(tempMp3)) fs.unlinkSync(tempMp3); if (fs.existsSync(tempOgg)) fs.unlinkSync(tempOgg); } catch(e){}
+  }
+
+  return null;
 }
 
 // ── RICH LOCAL FALLBACK ──
 function generateSmartLocalReply(chatId, userMessageText) {
   const text = (userMessageText || '').toLowerCase().trim();
 
+  if (text.includes('c++') || text.includes('سی پلس') || text.includes('cpp')) {
+    return 'C++ aik boht hi powerful, fast aur high-performance programming language hai jise Bjarne Stroustrup ne 1979 mein develop kiya tha. Ye C language ka extended version hai jisme Object-Oriented Programming (OOP) ke features shamil hain.\n\n• Speed & Performance: C++ direct hardware ke qareeb kaam karti hai is liye ye boht fast hai.\n• Applications: Gaming Engines (Unreal Engine), Operating Systems (Windows, Mac kernels), Web Browsers, aur Financial Trading Systems mein use hoti hai.\n• Core Concepts: Classes, Objects, Inheritance, Polymorphism, Pointers aur Memory Management.\n\nAgar aap C++ par koi project banana chahte hain to hum aapki mukammal madad kar sakte hain!';
+  }
   if (text.includes('python') || text.includes('پائیتھن') || text.includes('coding') || text.includes('programming')) {
     return 'Python aik boht hi popular, powerful aur aasan programming language hai. Is ko seekhna boht easy hai kyun ke iska syntax English jesa hota hai. Python Web Development (Django/Flask), Artificial Intelligence, Machine Learning, Data Science, aur Automation bots banane mein sab se zyada use hoti hai. Agar aap Python seekhna chahte hain ya koi custom Python AI Project / Bot banwana chahte hain to hum aap ki mukammal madad kar sakte hain!';
   }
@@ -170,7 +230,7 @@ function generateSmartLocalReply(chatId, userMessageText) {
   if (text.includes('price') || text.includes('rate') || text.includes('cost') || text.includes('kitne')) {
     return 'Hamari services aur rates yeh hain:\n- 🌐 Website Development: 15,000 PKR\n- 📱 Mobile App Development: 20,000 PKR\n- 🤖 AI Chatbot: 5,000 PKR\nAap konsi service mein interested hain?';
   }
-  return 'Ji bilkul! Main Arham ka AI Assistant hoon. Main aapke har sawal ka mukammal jawab de sakta hoon aur hum Website, Mobile App aur AI Chatbots develop karte hain. Aapko kis bare mein mazeed janna hai? 🤝';
+  return 'Ji bilkul! Main Arham ka AI Assistant hoon. Main aapke har sawal ka mukammal aur detail mein jawab de sakta hoon aur hum Website, Mobile App aur AI Chatbots develop karte hain. Aapko kis bare mein mazeed janna hai? 🤝';
 }
 
 export function cleanWhatsAppText(text) {
@@ -189,7 +249,7 @@ export function cleanWhatsAppText(text) {
 export async function generateResponse(chatId, userMessageText, apiKeyOverride = null) {
   const session = getChatSession(chatId);
 
-  const enrichedInstructions = SYSTEM_INSTRUCTIONS + '\n\nIMPORTANT CONVERSATIONAL RULES:\n- Answer ANY topic (e.g. Python, coding, AI, tech, general knowledge) in thorough, natural Roman Urdu or Urdu.\n- Do NOT use "#", "|", or markdown tables in the reply — use clean natural text with emojis and bullet points.\n- If asked for voice or audio, speak naturally and clearly.\n- Business Pricing: Website (15,000 PKR), Mobile App (20,000 PKR), AI Chatbot (5,000 PKR).';
+  const enrichedInstructions = SYSTEM_INSTRUCTIONS + '\n\nIMPORTANT CONVERSATIONAL RULES:\n- Answer ANY topic (e.g. C++, Python, Java, coding, AI, tech, general knowledge) in thorough, full, complete, and exhaustive detail in natural Roman Urdu or Urdu.\n- NEVER cut off mid-sentence or stop early; provide complete and comprehensive explanations.\n- Do NOT use "#", "|", or markdown tables in the reply — use clean natural text with emojis and bullet points.\n- If asked for voice or audio, explain naturally and clearly as if speaking in a real conversation.\n- Business Pricing: Website (15,000 PKR), Mobile App (20,000 PKR), AI Chatbot (5,000 PKR).';
 
   // 1. Try Groq AI (Ultra-fast GPT-OSS 120B / 20B / Qwen 27B)
   if (groq) {
@@ -209,7 +269,7 @@ export async function generateResponse(chatId, userMessageText, apiKeyOverride =
           model: modelName,
           messages,
           temperature: 0.7,
-          max_tokens: 600,
+          max_tokens: 2500, // Full detailed up to 5-minute explanation
         });
 
         let reply = completion.choices[0]?.message?.content?.trim();
@@ -234,7 +294,7 @@ export async function generateResponse(chatId, userMessageText, apiKeyOverride =
         const model = genAI.getGenerativeModel({
           model: modelName,
           systemInstruction: enrichedInstructions,
-          generationConfig: { temperature: 0.7, maxOutputTokens: 600 }
+          generationConfig: { temperature: 0.7, maxOutputTokens: 2500 }
         });
         const chat = model.startChat({ history: session.history });
         const result = await chat.sendMessage(userMessageText);
