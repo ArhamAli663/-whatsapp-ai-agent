@@ -30,6 +30,7 @@ let status = {
 const humanTakeover = new Map(); // chatId -> timestamp of when takeover expires
 const TAKEOVER_DURATION_MS = 30 * 1000; // 30 seconds
 const pendingCustomerMsgTimestamps = new Map(); // chatId -> timestamp of latest customer msg
+let globalKeepAliveTimer = null;
 
 // Event listeners array for UI updates
 const logListeners = new Set();
@@ -256,6 +257,16 @@ export async function connectWhatsApp(phoneNumberOverride = null, authModeOverri
 
       addLog('success', `🎉 WhatsApp Connected Successfully! Account: ${sock.user?.id || 'Connected'}`);
       broadcastStatus();
+
+      // ── 24/7 KEEPALIVE HEARTBEAT (PREVENTS IDLE DISCONNECT) ──
+      if (globalKeepAliveTimer) clearInterval(globalKeepAliveTimer);
+      globalKeepAliveTimer = setInterval(async () => {
+        if (sock && status.connected) {
+          try {
+            await sock.sendPresenceUpdate('available');
+          } catch (e) {}
+        }
+      }, 20000);
     }
   });
 

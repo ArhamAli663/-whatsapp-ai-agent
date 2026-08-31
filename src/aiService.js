@@ -162,7 +162,7 @@ export async function generateVoiceBuffer(text) {
           .audioCodec('libopus')
           .audioChannels(1)
           .audioFrequency(48000)
-          .outputOptions(['-c:a libopus', '-b:a 96k', '-vbr on', '-application voip'])
+          .outputOptions(['-c:a libopus', '-b:a 96k', '-vbr on', '-application voip', '-af volume=1.2,highpass=f=75,lowpass=f=8500,equalizer=f=1400:t=q:w=1.2:g=2.5'])
           .save(tempOgg)
           .on('end', resolve)
           .on('error', reject);

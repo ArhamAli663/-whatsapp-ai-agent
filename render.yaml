@@ -1,0 +1,16 @@
+﻿services:
+  - type: web
+    name: arham-whatsapp-ai-agent
+    env: node
+    plan: free
+    buildCommand: npm install --no-audit
+    startCommand: node src/server.js
+    envVars:
+      - key: PORT
+        value: "3000"
+      - key: GROQ_KEY
+        sync: false
+      - key: PHONE
+        value: "923298024266"
+      - key: AUTH_MODE
+        value: "qr"
