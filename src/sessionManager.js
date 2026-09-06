@@ -68,9 +68,16 @@ export function ensureSessionRestored() {
   const hasLocalCreds = fs.existsSync(credsPath) && fs.statSync(credsPath).size > 100;
 
   if (!hasLocalCreds) {
-    const sessionEnv = process.env.SESSION_DATA_BASE64 || process.env.WHATSAPP_SESSION_BASE64 || process.env.SESSION_DATA;
+    let sessionEnv = process.env.SESSION_DATA_BASE64 || process.env.WHATSAPP_SESSION_BASE64 || process.env.SESSION_DATA;
+    if (!sessionEnv && process.env.SESSION_DATA_BASE64_1) {
+      sessionEnv = (process.env.SESSION_DATA_BASE64_1 || '') +
+                   (process.env.SESSION_DATA_BASE64_2 || '') +
+                   (process.env.SESSION_DATA_BASE64_3 || '') +
+                   (process.env.SESSION_DATA_BASE64_4 || '');
+    }
+
     if (sessionEnv) {
-      console.log('[SessionManager] auth_info_baileys missing or empty. Restoring from SESSION_DATA_BASE64...');
+      console.log('[SessionManager] auth_info_baileys missing or empty. Restoring from SESSION_DATA_BASE64 environment variables...');
       return restoreSessionFromBase64(sessionEnv);
     }
   }
