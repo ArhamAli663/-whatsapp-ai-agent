@@ -13,6 +13,8 @@ import path from 'path';
 import { CONFIG } from './config.js';
 import { generateResponse, transcribeVoice, generateVoiceBuffer } from './aiService.js';
 
+import { ensureSessionRestored, packSessionToBase64 } from './sessionManager.js';
+
 let sock = null;
 let reconnectTimer = null;
 let status = {
@@ -125,6 +127,9 @@ export async function connectWhatsApp(phoneNumberOverride = null, authModeOverri
     sock = null;
   }
 
+  // Auto-restore session from environment variable if missing
+  ensureSessionRestored();
+
   const targetPhone = phoneNumberOverride || CONFIG.phoneNumber;
   const targetAuthMode = authModeOverride || CONFIG.authMode || 'qr';
   status.authMode = targetAuthMode;
@@ -160,7 +165,15 @@ export async function connectWhatsApp(phoneNumberOverride = null, authModeOverri
     emitOwnEvents: false,
   });
 
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('creds.update', async () => {
+    await saveCreds();
+    try {
+      const b64 = packSessionToBase64();
+      if (b64) {
+        process.env.SESSION_DATA_BASE64 = b64;
+      }
+    } catch (e) {}
+  });
 
   let pairingRequested = false;
 
@@ -229,7 +242,7 @@ export async function connectWhatsApp(phoneNumberOverride = null, authModeOverri
           }, 1000);
         }
       } else if (!isLoggedOut) {
-        addLog('warning', `Connection closed (Code: ${statusCode || 'Unknown'}). Reconnecting in 3s...`);
+        addLog('warning', `Connection closed (Code: ${statusCode || 'Unknown'}). Reconnecting automatically in 3s...`);
         broadcastStatus();
         if (!reconnectTimer) {
           reconnectTimer = setTimeout(() => {
@@ -238,13 +251,13 @@ export async function connectWhatsApp(phoneNumberOverride = null, authModeOverri
           }, 3000);
         }
       } else {
-        addLog('warning', 'Session logged out from device. Refreshing fresh QR code...');
-        await clearSession();
+        addLog('warning', 'Connection reset by server. Restoring session credentials and reconnecting...');
+        ensureSessionRestored();
         if (!reconnectTimer) {
           reconnectTimer = setTimeout(() => {
             reconnectTimer = null;
             connectWhatsApp(targetPhone, targetAuthMode);
-          }, 1500);
+          }, 2000);
         }
       }
     } else if (connection === 'open') {
