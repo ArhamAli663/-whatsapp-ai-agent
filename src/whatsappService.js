@@ -232,7 +232,7 @@ export async function connectWhatsApp(phoneNumberOverride = null, authModeOverri
       const isRestartRequired = statusCode === DisconnectReason.restartRequired || statusCode === 515;
 
       if (isRestartRequired) {
-        addLog('info', 'Finalizing WhatsApp connection...');
+        addLog('info', 'WhatsApp requested restart. Reconnecting in 1s...');
         status.connecting = true;
         broadcastStatus();
         if (!reconnectTimer) {
@@ -242,7 +242,7 @@ export async function connectWhatsApp(phoneNumberOverride = null, authModeOverri
           }, 1000);
         }
       } else if (!isLoggedOut) {
-        addLog('warning', `Connection closed (Code: ${statusCode || 'Unknown'}). Reconnecting automatically in 3s...`);
+        addLog('warning', `Connection blip (Code: ${statusCode || 'Network'}). Auto-reconnecting in 3s...`);
         broadcastStatus();
         if (!reconnectTimer) {
           reconnectTimer = setTimeout(() => {
@@ -251,7 +251,7 @@ export async function connectWhatsApp(phoneNumberOverride = null, authModeOverri
           }, 3000);
         }
       } else {
-        addLog('warning', 'Connection reset by server. Restoring session credentials and reconnecting...');
+        addLog('warning', 'Session reconnection triggered. Restoring credentials and resuming connection...');
         ensureSessionRestored();
         if (!reconnectTimer) {
           reconnectTimer = setTimeout(() => {
@@ -271,15 +271,19 @@ export async function connectWhatsApp(phoneNumberOverride = null, authModeOverri
       addLog('success', `🎉 WhatsApp Connected Successfully! Account: ${sock.user?.id || 'Connected'}`);
       broadcastStatus();
 
-      // ── 24/7 KEEPALIVE HEARTBEAT (PREVENTS IDLE DISCONNECT) ──
+      // ── 24/7 LIFETIME ANTI-IDLE HEARTBEAT (PREVENTS 14-DAY INACTIVITY EXPIRATION) ──
+      // Sends presence and socket pings every 25 seconds so WhatsApp servers never expire the session
       if (globalKeepAliveTimer) clearInterval(globalKeepAliveTimer);
       globalKeepAliveTimer = setInterval(async () => {
         if (sock && status.connected) {
           try {
             await sock.sendPresenceUpdate('available');
+            if (sock.ws && typeof sock.ws.ping === 'function') {
+              sock.ws.ping();
+            }
           } catch (e) {}
         }
-      }, 20000);
+      }, 25000);
     }
   });
 
