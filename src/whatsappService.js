@@ -1,5 +1,6 @@
 import makeWASocket, {
   useMultiFileAuthState,
+  makeCacheableSignalKeyStore,
   DisconnectReason,
   fetchLatestBaileysVersion,
   delay,
@@ -12,11 +13,13 @@ import fs from 'fs';
 import path from 'path';
 import { CONFIG } from './config.js';
 import { generateResponse, transcribeVoice, generateVoiceBuffer } from './aiService.js';
-
-import { ensureSessionRestored, packSessionToBase64 } from './sessionManager.js';
+import { ensureSessionRestored, sanitizeCredsRegistration, persistSession } from './sessionManager.js';
 
 let sock = null;
 let reconnectTimer = null;
+let globalKeepAliveTimer = null;
+let isConnecting = false;
+
 let status = {
   connected: false,
   connecting: false,
@@ -28,13 +31,31 @@ let status = {
   logs: []
 };
 
-// ── 30-SECOND HUMAN TAKEOVER & AUTO-RESUME STATE ──
-const humanTakeover = new Map(); // chatId -> timestamp of when takeover expires
-const TAKEOVER_DURATION_MS = 30 * 1000; // 30 seconds
-const pendingCustomerMsgTimestamps = new Map(); // chatId -> timestamp of latest customer msg
-let globalKeepAliveTimer = null;
+// Track recent bot replies to avoid infinite echo loops
+const recentBotSentIds = new Set();
 
-// Event listeners array for UI updates
+// Message Store for retry decryption (Prevents "Waiting for this message" & Bad MAC)
+const messageStore = new Map();
+function saveMessage(id, msg) {
+  if (!id || !msg) return;
+  messageStore.set(id, msg);
+  if (messageStore.size > 1500) {
+    const firstKey = messageStore.keys().next().value;
+    messageStore.delete(firstKey);
+  }
+}
+
+// 30-Second pending auto-replies map
+// key: senderJid (e.g. 923xxxxxxxxx@s.whatsapp.net)
+// val: { timer, texts: string[], wantsVoice: boolean, senderPhone: string }
+const pendingReplies = new Map();
+
+// Human-Handoff Pause Map
+// If Arham replies to a customer, pause AI for that customer so Arham can chat freely!
+// key: senderJid, val: timestamp (ms) until which bot is silent
+const humanPausedUntil = new Map();
+
+// Event listeners for UI updates
 const logListeners = new Set();
 const statusListeners = new Set();
 
@@ -48,7 +69,7 @@ export function addStatusListener(fn) {
 
 function broadcastLog(logItem) {
   status.logs.unshift(logItem);
-  if (status.logs.length > 100) status.logs.pop();
+  if (status.logs.length > 150) status.logs.pop();
   for (const listener of logListeners) {
     try { listener(logItem); } catch (e) {}
   }
@@ -63,8 +84,8 @@ function broadcastStatus() {
 function addLog(type, message, details = null) {
   const logItem = {
     id: Date.now() + Math.random().toString(36).substr(2, 4),
-    timestamp: new Date().toLocaleTimeString(),
-    type, // 'info', 'success', 'warning', 'error', 'message_in', 'message_out'
+    timestamp: new Date().toLocaleTimeString('en-PK', { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+    type,
     message,
     details
   };
@@ -76,10 +97,44 @@ export function getStatus() {
   return { ...status };
 }
 
+// ── UNWRAP ANY WHATSAPP MESSAGE FORMAT ──
+function unwrapMessage(msg) {
+  let m = msg.message;
+  if (!m) return { text: '', isAudio: false, isImage: false };
+
+  if (m.ephemeralMessage?.message) m = m.ephemeralMessage.message;
+  if (m.viewOnceMessage?.message) m = m.viewOnceMessage.message;
+  if (m.viewOnceMessageV2?.message) m = m.viewOnceMessageV2.message;
+  if (m.documentWithCaptionMessage?.message) m = m.documentWithCaptionMessage.message;
+
+  const isAudio = Boolean(m.audioMessage || m.pttMessage);
+  const isImage = Boolean(m.imageMessage);
+
+  const text =
+    m.conversation ||
+    m.extendedTextMessage?.text ||
+    m.imageMessage?.caption ||
+    m.videoMessage?.caption ||
+    m.buttonsResponseMessage?.selectedDisplayText ||
+    m.buttonsResponseMessage?.selectedButtonId ||
+    m.templateButtonReplyMessage?.selectedDisplayText ||
+    m.templateButtonReplyMessage?.selectedId ||
+    m.listResponseMessage?.title ||
+    m.interactiveResponseMessage?.body?.text ||
+    '';
+
+  return { text: text.trim(), isAudio, isImage };
+}
+
+// Manual session clearing ONLY if user explicitly triggers it
 export async function clearSession() {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
+  }
+  if (globalKeepAliveTimer) {
+    clearInterval(globalKeepAliveTimer);
+    globalKeepAliveTimer = null;
   }
   if (sock) {
     try {
@@ -90,6 +145,12 @@ export async function clearSession() {
     } catch (e) {}
     sock = null;
   }
+
+  for (const [, item] of pendingReplies) {
+    clearTimeout(item.timer);
+  }
+  pendingReplies.clear();
+  humanPausedUntil.clear();
 
   const authFolder = path.resolve('auth_info_baileys');
   try {
@@ -106,17 +167,19 @@ export async function clearSession() {
   status.qrCodeUrl = null;
   status.qrRaw = null;
   status.user = null;
-  addLog('info', 'Session cache cleared. Ready for clean login.');
+  addLog('info', 'Session cache cleared.');
   broadcastStatus();
 }
 
 export async function connectWhatsApp(phoneNumberOverride = null, authModeOverride = null) {
+  if (isConnecting) return sock;
+  isConnecting = true;
+
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
   }
 
-  // Clean up existing socket connection safely
   if (sock) {
     try {
       sock.ev.removeAllListeners('connection.update');
@@ -127,290 +190,333 @@ export async function connectWhatsApp(phoneNumberOverride = null, authModeOverri
     sock = null;
   }
 
-  // Auto-restore session from environment variable if missing
-  ensureSessionRestored();
-
-  const targetPhone = phoneNumberOverride || CONFIG.phoneNumber;
-  const targetAuthMode = authModeOverride || CONFIG.authMode || 'qr';
+  const targetPhone = (phoneNumberOverride || CONFIG.phoneNumber || '923298024266').replace(/\D/g, '');
+  const targetAuthMode = authModeOverride || CONFIG.authMode || 'pairing';
   status.authMode = targetAuthMode;
 
-  addLog('info', `Initializing WhatsApp session (Mode: ${targetAuthMode.toUpperCase()})...`);
+  addLog('info', `Connecting WhatsApp 24/7 Agent (Mode: ${targetAuthMode.toUpperCase()}) for +${targetPhone}...`);
   status.connecting = true;
   status.connected = false;
-  status.pairingCode = null;
-  status.qrCodeUrl = null;
-  status.qrRaw = null;
   broadcastStatus();
+
+  // Ensure session is available and creds are sanitized
+  ensureSessionRestored();
+  sanitizeCredsRegistration();
 
   const authFolder = path.resolve('auth_info_baileys');
   if (!fs.existsSync(authFolder)) {
     fs.mkdirSync(authFolder, { recursive: true });
   }
 
-  const { state, saveCreds } = await useMultiFileAuthState(authFolder);
-  const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1015901307] }));
+  try {
+    const { state, saveCreds } = await useMultiFileAuthState(authFolder);
+    const { version } = await fetchLatestBaileysVersion().catch(() => ({ version: [2, 3000, 1043857760] }));
 
-  const waSocketFunc = makeWASocket.default || makeWASocket;
-
-  sock = waSocketFunc({
-    version,
-    logger: pino({ level: 'silent' }),
-    printQRInTerminal: false,
-    auth: state,
-    browser: Browsers.macOS('Desktop'),
-    markOnlineOnConnect: true,
-    connectTimeoutMs: 60000,
-    defaultQueryTimeoutMs: 60000,
-    keepAliveIntervalMs: 10000,
-    emitOwnEvents: false,
-  });
-
-  sock.ev.on('creds.update', async () => {
-    await saveCreds();
-    try {
-      const b64 = packSessionToBase64();
-      if (b64) {
-        process.env.SESSION_DATA_BASE64 = b64;
-      }
-    } catch (e) {}
-  });
-
-  let pairingRequested = false;
-
-  sock.ev.on('connection.update', async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr) {
-      status.qrRaw = qr;
-      try {
-        const qrDataUrl = await QRCode.toDataURL(qr, {
-          margin: 2,
-          width: 320,
-          color: {
-            dark: '#0f172a',
-            light: '#ffffff'
-          }
-        });
-        status.qrCodeUrl = qrDataUrl;
-      } catch (err) {
-        status.qrCodeUrl = qr;
-      }
-
-      if (targetAuthMode === 'qr') {
-        addLog('info', 'QR Code generated! Scan with WhatsApp -> Linked Devices -> Link a Device.');
-        QRCode.toString(qr, { type: 'terminal', small: true }, (err, str) => {
-          if (!err) console.log(str);
-        });
-        broadcastStatus();
-      } else if (targetAuthMode === 'pairing' && !sock.authState?.creds?.registered && !pairingRequested && targetPhone) {
-        pairingRequested = true;
-        try {
-          const formattedNumber = targetPhone.replace(/[^0-9]/g, '');
-          addLog('info', `Requesting Pairing Code for number +${formattedNumber}...`);
-          const code = await sock.requestPairingCode(formattedNumber);
-          status.pairingCode = code;
-          addLog('success', `Pairing Code generated: ${code}`);
-          console.log('\n======================================================');
-          console.log(`  YOUR WHATSAPP PAIRING CODE FOR +${formattedNumber}: ${code}`);
-          console.log('======================================================\n');
-          broadcastStatus();
-        } catch (pairErr) {
-          addLog('error', `Failed to request pairing code: ${pairErr.message}`);
-          pairingRequested = false;
-        }
-      } else {
-        broadcastStatus();
-      }
+    if (state.creds?.me && !state.creds.registered) {
+      state.creds.registered = true;
     }
+    const isRegistered = state.creds?.registered === true;
 
-    if (connection === 'close') {
-      status.connected = false;
-      status.connecting = false;
+    const silentLogger = pino({ level: 'silent' });
+    const waSocketFunc = makeWASocket.default || makeWASocket;
 
-      const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const isLoggedOut = statusCode === DisconnectReason.loggedOut || statusCode === 401;
-      const isRestartRequired = statusCode === DisconnectReason.restartRequired || statusCode === 515;
-
-      if (isRestartRequired) {
-        addLog('info', 'WhatsApp requested restart. Reconnecting in 1s...');
-        status.connecting = true;
-        broadcastStatus();
-        if (!reconnectTimer) {
-          reconnectTimer = setTimeout(() => {
-            reconnectTimer = null;
-            connectWhatsApp(targetPhone, targetAuthMode);
-          }, 1000);
+    sock = waSocketFunc({
+      version,
+      logger: silentLogger,
+      printQRInTerminal: false,
+      auth: {
+        creds: state.creds,
+        keys: makeCacheableSignalKeyStore(state.keys, silentLogger),
+      },
+      browser: Browsers.macOS('Desktop'),
+      markOnlineOnConnect: true,
+      syncFullHistory: false,
+      connectTimeoutMs: 60000,
+      defaultQueryTimeoutMs: 60000,
+      keepAliveIntervalMs: 15000,
+      emitOwnEvents: false,
+      getMessage: async (key) => {
+        if (key && key.id && messageStore.has(key.id)) {
+          return messageStore.get(key.id);
         }
-      } else if (!isLoggedOut) {
-        addLog('warning', `Connection blip (Code: ${statusCode || 'Network'}). Auto-reconnecting in 3s...`);
-        broadcastStatus();
-        if (!reconnectTimer) {
-          reconnectTimer = setTimeout(() => {
-            reconnectTimer = null;
-            connectWhatsApp(targetPhone, targetAuthMode);
-          }, 3000);
-        }
-      } else {
-        addLog('warning', 'Session reconnection triggered. Restoring credentials and resuming connection...');
-        ensureSessionRestored();
-        if (!reconnectTimer) {
-          reconnectTimer = setTimeout(() => {
-            reconnectTimer = null;
-            connectWhatsApp(targetPhone, targetAuthMode);
+        return { conversation: '' };
+      },
+    });
+
+    sock.ev.on('creds.update', async () => {
+      await saveCreds();
+      persistSession();
+    });
+
+    let pairingRequested = false;
+
+    sock.ev.on('connection.update', async (update) => {
+      const { connection, lastDisconnect, qr } = update;
+
+      if (qr && !isRegistered && !state.creds?.me) {
+        status.qrRaw = qr;
+        try {
+          const qrDataUrl = await QRCode.toDataURL(qr, { margin: 2, scale: 6 });
+          status.qrCodeUrl = qrDataUrl;
+          broadcastStatus();
+        } catch (err) {}
+
+        if (!pairingRequested && targetPhone) {
+          pairingRequested = true;
+          setTimeout(async () => {
+            if (!sock) return;
+            try {
+              addLog('info', `Requesting 8-digit Pairing Code for +${targetPhone}...`);
+              const code = await sock.requestPairingCode(targetPhone);
+              const formatted = code?.match(/.{1,4}/g)?.join('-') || code;
+              status.pairingCode = formatted;
+              addLog('success', `🔑 PAIRING CODE: ${formatted}`);
+              broadcastStatus();
+            } catch (pairErr) {
+              addLog('error', `Failed to request pairing code: ${pairErr.message}`);
+              pairingRequested = false;
+            }
           }, 2000);
         }
       }
-    } else if (connection === 'open') {
-      status.connected = true;
-      status.connecting = false;
-      status.pairingCode = null;
-      status.qrCodeUrl = null;
-      status.qrRaw = null;
-      status.user = sock.user;
 
-      addLog('success', `🎉 WhatsApp Connected Successfully! Account: ${sock.user?.id || 'Connected'}`);
-      broadcastStatus();
+      if (connection === 'open') {
+        status.connected = true;
+        status.connecting = false;
+        status.pairingCode = null;
+        status.qrCodeUrl = null;
+        status.qrRaw = null;
+        status.user = sock.user;
+        pairingRequested = false;
+        isConnecting = false;
 
-      // ── 24/7 LIFETIME ANTI-IDLE HEARTBEAT (PREVENTS 14-DAY INACTIVITY EXPIRATION) ──
-      // Sends presence and socket pings every 25 seconds so WhatsApp servers never expire the session
-      if (globalKeepAliveTimer) clearInterval(globalKeepAliveTimer);
-      globalKeepAliveTimer = setInterval(async () => {
-        if (sock && status.connected) {
+        const myNum = sock.user?.id?.split(':')[0] || targetPhone;
+        addLog('success', `✅ WhatsApp 24/7 Agent CONNECTED! Active for +${myNum}`);
+        broadcastStatus();
+
+        persistSession();
+
+        if (globalKeepAliveTimer) clearInterval(globalKeepAliveTimer);
+        globalKeepAliveTimer = setInterval(async () => {
+          if (sock && status.connected) {
+            try {
+              await sock.sendPresenceUpdate('available');
+            } catch (e) {}
+          }
+        }, 15000);
+      }
+
+      if (connection === 'close') {
+        status.connected = false;
+        status.connecting = false;
+        isConnecting = false;
+
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        const reason = lastDisconnect?.error?.message || 'Connection lost';
+
+        addLog('warning', `Connection closed [${statusCode ?? 'N/A'}]: ${reason}`);
+        broadcastStatus();
+
+        addLog('info', 'Reconnecting to WhatsApp in 5 seconds (preserving session keys)...');
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = null;
+          connectWhatsApp(targetPhone, targetAuthMode);
+        }, 5000);
+      }
+    });
+
+    // ── MESSAGE UPSERT ──
+    sock.ev.on('messages.upsert', async (m) => {
+      try {
+        const msg = m.messages?.[0];
+        if (!msg || !msg.message) return;
+
+        // Save to in-memory message store for retry resolution
+        if (msg.key?.id) {
+          saveMessage(msg.key.id, msg.message);
+        }
+
+        const senderJid = msg.key.remoteJid;
+        if (!senderJid || senderJid === 'status@broadcast') return;
+        if (senderJid.endsWith('@broadcast') || senderJid.endsWith('@g.us') || senderJid.endsWith('@newsletter')) return;
+
+        if (msg.key?.id && recentBotSentIds.has(msg.key.id)) {
+          return;
+        }
+
+        const senderPhone = senderJid.split('@')[0];
+        const botPhone = (sock.user?.id?.split(':')[0] || targetPhone).replace(/\D/g, '');
+        const isSelfChat = senderJid.includes(botPhone) || senderPhone === botPhone;
+
+        const unwrapped = unwrapMessage(msg);
+        let userText = unwrapped.text;
+        const isAudio = unwrapped.isAudio;
+
+        // ── OWNER MANUAL REPLY & COMMAND HANDLING ──
+        if (msg.key.fromMe) {
+          if (!isSelfChat) {
+            // Check for control commands
+            if (userText.toLowerCase() === '.bot off' || userText.toLowerCase() === '#stop') {
+              humanPausedUntil.set(senderJid, Date.now() + 24 * 60 * 60 * 1000); // 24 hours
+              addLog('info', `🛑 AI Bot manually MUTED for +${senderPhone} for 24 hours.`);
+              return;
+            }
+            if (userText.toLowerCase() === '.bot on' || userText.toLowerCase() === '#start') {
+              humanPausedUntil.delete(senderJid);
+              addLog('info', `▶️ AI Bot manually UNMUTED for +${senderPhone}.`);
+              return;
+            }
+
+            // Arham sent a normal reply to the customer:
+            // 1. Cancel pending 30s timer
+            if (pendingReplies.has(senderJid)) {
+              const pending = pendingReplies.get(senderJid);
+              clearTimeout(pending.timer);
+              pendingReplies.delete(senderJid);
+            }
+            // 2. Pause AI for this chat for 20 minutes so Arham can talk without AI intrusion!
+            humanPausedUntil.set(senderJid, Date.now() + 20 * 60 * 1000);
+            addLog('info', `👤 Owner (Arham) replied to +${senderPhone}. AI auto-reply PAUSED for 20 mins for this chat.`);
+            return;
+          }
+        }
+
+        // Check if this chat is currently paused by human handoff
+        if (!isSelfChat) {
+          const pausedUntil = humanPausedUntil.get(senderJid) || 0;
+          if (Date.now() < pausedUntil) {
+            const remainingMins = Math.ceil((pausedUntil - Date.now()) / 60000);
+            addLog('info', `⏸️ Chat with +${senderPhone} is paused (${remainingMins}m left) because owner is chatting. AI silent.`);
+            return;
+          }
+        }
+
+        // Voice Note transcription
+        if (isAudio) {
+          addLog('info', `🎙️ Voice Note received from +${senderPhone}. Transcribing via Groq Whisper...`);
           try {
-            await sock.sendPresenceUpdate('available');
-            if (sock.ws && typeof sock.ws.ping === 'function') {
-              sock.ws.ping();
+            const audioBuffer = await downloadMediaMessage(msg, 'buffer', {});
+            if (audioBuffer) {
+              const transcribed = await transcribeVoice(audioBuffer);
+              if (transcribed) {
+                userText = transcribed;
+                addLog('success', `🎙️ Voice Transcribed (+${senderPhone}): "${transcribed}"`);
+              }
             }
+          } catch (audioErr) {
+            console.warn('[Audio Download Error]:', audioErr.message);
+          }
+        }
+
+        if (!userText || !userText.trim()) return;
+
+        const explicitVoiceReq = /(voice|audio|awaaz|awaz|bol ke|batao voice|voice bhejo|vais|وائس)/i.test(userText);
+        const wantsVoice = isAudio || explicitVoiceReq;
+
+        addLog('message_in', `📩 From +${senderPhone}: "${userText.substring(0, 80)}"`, { from: senderPhone });
+
+        // Check if there is already a pending reply timer for this chat
+        let pending = pendingReplies.get(senderJid);
+        if (pending) {
+          clearTimeout(pending.timer);
+          pending.texts.push(userText.trim());
+          if (wantsVoice) pending.wantsVoice = true;
+          addLog('info', `⏳ Additional message from +${senderPhone}. 30s delay refreshed.`);
+        } else {
+          pending = {
+            texts: [userText.trim()],
+            wantsVoice,
+            senderPhone,
+            timer: null
+          };
+          pendingReplies.set(senderJid, pending);
+          addLog('info', `⏳ 30s delay started for +${senderPhone} (giving owner time to reply or user to finish typing)...`);
+        }
+
+        // ── 30 SECONDS DELAY ──
+        pending.timer = setTimeout(async () => {
+          pendingReplies.delete(senderJid);
+
+          if (!sock || !status.connected) {
+            console.warn('[AutoReply] WhatsApp not connected when 30s timer expired.');
+            return;
+          }
+
+          // Check again if owner replied during the 30 seconds
+          const currentPause = humanPausedUntil.get(senderJid) || 0;
+          if (Date.now() < currentPause) {
+            addLog('info', `⏸️ Owner took over chat with +${senderPhone}. Auto-reply aborted.`);
+            return;
+          }
+
+          const combinedText = pending.texts.join('\n');
+          const replyInVoice = pending.wantsVoice;
+
+          addLog('info', `🤖 30s elapsed for +${senderPhone}. AI preparing response...`);
+
+          try {
+            await sock.sendPresenceUpdate(replyInVoice ? 'recording' : 'composing', senderJid);
           } catch (e) {}
-        }
-      }, 25000);
-    }
-  });
 
-  // ── HANDLE INCOMING & OUTGOING MESSAGES ──
-  sock.ev.on('messages.upsert', async (m) => {
-    try {
-      const msg = m.messages[0];
-      if (!msg || !msg.message) return;
+          const aiReply = await generateResponse(senderJid, combinedText);
 
-      const senderJid = msg.key.remoteJid;
-      if (!senderJid || senderJid === 'status@broadcast') return;
-
-      // Ignore group messages
-      if (senderJid.endsWith('@g.us')) return;
-
-      const senderPhone = senderJid.split('@')[0];
-
-      // ── ARHAM (OWNER) MANUAL REPLY INTERCEPTION ──
-      if (msg.key.fromMe) {
-        const ownerText = msg.message.conversation ||
-                          msg.message.extendedTextMessage?.text || '';
-        humanTakeover.set(senderJid, Date.now() + TAKEOVER_DURATION_MS);
-        if (ownerText.trim()) {
-          addLog('info', `🧑 Arham chatting (+${senderPhone}): bot paused 30s. "${ownerText.substring(0, 35)}"`);
-        }
-        return;
-      }
-
-      // ── EXTRACT CUSTOMER MESSAGE (TEXT OR VOICE NOTE) ──
-      let userText = msg.message.conversation ||
-                     msg.message.extendedTextMessage?.text ||
-                     msg.message.imageMessage?.caption ||
-                     msg.message.videoMessage?.caption || '';
-
-      const isAudio = Boolean(msg.message.audioMessage || msg.message.pttMessage);
-
-      if (isAudio) {
-        addLog('info', `🎙️ Voice Note received from +${senderPhone}. Transcribing...`);
-        try {
-          const audioBuffer = await downloadMediaMessage(msg, 'buffer', {});
-          if (audioBuffer) {
-            const transcribed = await transcribeVoice(audioBuffer);
-            if (transcribed) {
-              userText = transcribed;
-              addLog('success', `🎙️ Voice Transcribed (+${senderPhone}): "${transcribed}"`);
+          if (replyInVoice) {
+            addLog('info', `🎙️ Generating Voice Note reply for +${senderPhone}...`);
+            let voiceSent = false;
+            try {
+              const voiceData = await generateVoiceBuffer(aiReply);
+              if (voiceData?.buffer && voiceData.buffer.length > 500) {
+                const sent = await sock.sendMessage(senderJid, {
+                  audio: voiceData.buffer,
+                  mimetype: voiceData.mimetype,
+                  ptt: true
+                });
+                if (sent?.key?.id) {
+                  recentBotSentIds.add(sent.key.id);
+                  saveMessage(sent.key.id, sent.message);
+                }
+                voiceSent = true;
+                addLog('message_out', `🎙️ Sent Voice Note to +${senderPhone}`);
+              }
+            } catch (vErr) {
+              console.warn('[Voice Send Error]:', vErr.message);
             }
+
+            if (!voiceSent) {
+              const sent = await sock.sendMessage(senderJid, { text: aiReply });
+              if (sent?.key?.id) {
+                recentBotSentIds.add(sent.key.id);
+                saveMessage(sent.key.id, sent.message);
+              }
+              addLog('message_out', `Sent text reply to +${senderPhone}: "${aiReply.substring(0, 70)}..."`);
+            }
+          } else {
+            const sent = await sock.sendMessage(senderJid, { text: aiReply });
+            if (sent?.key?.id) {
+              recentBotSentIds.add(sent.key.id);
+              saveMessage(sent.key.id, sent.message);
+            }
+            addLog('message_out', `⚡ Sent AI reply to +${senderPhone}: "${aiReply.substring(0, 70)}..."`);
           }
-        } catch (audioErr) {
-          console.warn('[Audio Download Error]:', audioErr.message);
-        }
+
+          try {
+            await sock.sendPresenceUpdate('paused', senderJid);
+          } catch (e) {}
+
+        }, 30000); // Exactly 30 seconds
+
+      } catch (err) {
+        addLog('error', `Error handling message: ${err.message}`);
       }
+    });
 
-      if (!userText.trim()) return;
+  } catch (err) {
+    addLog('error', `Init error: ${err.message}`);
+    isConnecting = false;
+    reconnectTimer = setTimeout(() => connectWhatsApp(targetPhone, targetAuthMode), 5000);
+  }
 
-      const msgReceivedTime = Date.now();
-      pendingCustomerMsgTimestamps.set(senderJid, msgReceivedTime);
-
-      addLog('message_in', `Incoming message from +${senderPhone}: "${userText}"`, { from: senderPhone });
-
-      // ── 30-SECOND TIMER DELAY: GIVE ARHAM TIME TO REPLY ──
-      addLog('info', `⏳ Waiting 30s for Arham to reply to +${senderPhone} before bot steps in...`);
-      await delay(30000); // 30 SECONDS WAIT
-
-      // Check if Arham replied during these 30 seconds
-      const lastOwnerActivity = humanTakeover.get(senderJid) || 0;
-      if (lastOwnerActivity > msgReceivedTime) {
-        addLog('warning', `🚫 Arham replied to +${senderPhone}. Bot staying silent.`);
-        return;
-      }
-
-      // Check if a newer message arrived and superseded this one
-      if (pendingCustomerMsgTimestamps.get(senderJid) !== msgReceivedTime) {
-        return;
-      }
-
-      // ── 30 SECONDS ELAPSED ➔ BOT GENERATES AI RESPONSE ──
-      const wantsVoice = isAudio || /(voice|audio|awaaz|awaz|bol ke|batao voice|voice bhejo|vais|وائس)/i.test(userText);
-      addLog('success', `🤖 30s elapsed without Arham reply (+${senderPhone}) — Bot generating AI reply...`);
-
-      try { await sock.sendPresenceUpdate(wantsVoice ? 'recording' : 'composing', senderJid); } catch (e) {}
-
-      const aiReply = await generateResponse(senderJid, userText);
-
-      // Re-verify takeover one last time before sending
-      if ((humanTakeover.get(senderJid) || 0) > msgReceivedTime) {
-        addLog('warning', `🚫 Aborted reply to +${senderPhone} because Arham replied during AI generation.`);
-        try { await sock.sendPresenceUpdate('paused', senderJid); } catch (e) {}
-        return;
-      }
-
-      // ── IF VOICE REQUESTED OR VOICE NOTE RECEIVED ➔ SEND VOICE PTT NOTE ONLY ──
-      if (wantsVoice) {
-        addLog('info', `🎙️ Generating WhatsApp Voice Note for +${senderPhone}...`);
-        let voiceSent = false;
-        try {
-          const voiceData = await generateVoiceBuffer(aiReply);
-          if (voiceData && voiceData.buffer && voiceData.buffer.length > 500) {
-            await sock.sendMessage(senderJid, {
-              audio: voiceData.buffer,
-              mimetype: voiceData.mimetype,
-              ptt: true // Real WhatsApp Voice Note with waveform
-            });
-            voiceSent = true;
-            addLog('message_out', `🎙️ Sent WhatsApp Voice Note (PTT) ONLY to +${senderPhone}`);
-          }
-        } catch (voiceErr) {
-          addLog('warning', `Voice generation fallback: ${voiceErr.message}`);
-        }
-
-        // Only send text as emergency fallback if voice generation failed
-        if (!voiceSent) {
-          await sock.sendMessage(senderJid, { text: aiReply });
-          addLog('message_out', `Sent fallback text reply to +${senderPhone}: "${aiReply.substring(0, 70)}..."`);
-        }
-      } else {
-        // Text message only for regular text inquiries
-        await sock.sendMessage(senderJid, { text: aiReply });
-        addLog('message_out', `Sent AI reply to +${senderPhone}: "${aiReply.substring(0, 70)}..."`, { to: senderPhone, text: aiReply });
-      }
-
-      try { await sock.sendPresenceUpdate('paused', senderJid); } catch (e) {}
-
-    } catch (err) {
-      addLog('error', `Error processing incoming message: ${err.message}`);
-    }
-  });
-
+  isConnecting = false;
   return sock;
 }
 
@@ -418,6 +524,10 @@ export async function disconnectWhatsApp() {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer);
     reconnectTimer = null;
+  }
+  if (globalKeepAliveTimer) {
+    clearInterval(globalKeepAliveTimer);
+    globalKeepAliveTimer = null;
   }
   if (sock) {
     try {

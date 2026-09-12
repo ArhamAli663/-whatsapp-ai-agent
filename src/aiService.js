@@ -1,11 +1,28 @@
 import { GoogleGenerativeAI } from '@google/generative-ai';
 import Groq from 'groq-sdk';
 import { CONFIG, SYSTEM_INSTRUCTIONS } from './config.js';
-import ffmpeg from 'fluent-ffmpeg';
-import ffmpegPath from '@ffmpeg-installer/ffmpeg';
-import { MsEdgeTTS, OUTPUT_FORMAT } from 'msedge-tts';
 import fs from 'fs';
 import path from 'path';
+
+// Optional dynamic modules for voice generation (won't crash if uninstalled)
+let ffmpeg = null;
+let ffmpegPath = null;
+let MsEdgeTTS = null;
+let OUTPUT_FORMAT = null;
+
+try {
+  const fModule = await import('fluent-ffmpeg');
+  ffmpeg = fModule.default || fModule;
+  const pModule = await import('@ffmpeg-installer/ffmpeg');
+  ffmpegPath = pModule.default || pModule;
+  if (ffmpeg && ffmpegPath?.path) ffmpeg.setFfmpegPath(ffmpegPath.path);
+} catch (e) {}
+
+try {
+  const ttsModule = await import('msedge-tts');
+  MsEdgeTTS = ttsModule.MsEdgeTTS;
+  OUTPUT_FORMAT = ttsModule.OUTPUT_FORMAT;
+} catch (e) {}
 
 // Conversation memory
 const chatSessions = new Map();
@@ -65,7 +82,7 @@ export async function transcribeVoice(audioBuffer, mimeType = 'audio/ogg') {
     const transcription = await groq.audio.transcriptions.create({
       file,
       model: 'whisper-large-v3',
-      language: 'ur', // Strictly Urdu / Pakistani Accent
+      language: 'ur',
       prompt: 'یہ پاکستانی اردو میں بات چیت ہے: فلٹر، پائتھن، جاوا، سی پلس پلس، ویب سائٹ، موبائل ایپ، اے آئی چیٹ باٹ، ارہم، قیمت، کورس، پروگرامنگ، سوفٹ ویئر، اینڈرائیڈ، ری ایکٹ۔',
       temperature: 0.1,
       response_format: 'json',
@@ -78,21 +95,16 @@ export async function transcribeVoice(audioBuffer, mimeType = 'audio/ogg') {
       const file = new File([audioBuffer], 'voice_note.ogg', { type: mimeType });
       const fallback = await groq.audio.transcriptions.create({
         file,
-        model: 'whisper-large-v3',
-        language: 'ur',
-        temperature: 0.0,
+        model: 'whisper-large-v3-turbo',
+        response_format: 'text',
       });
-      const rawText = fallback?.text ? fallback.text.trim() : null;
+      const rawText = typeof fallback === 'string' ? fallback.trim() : fallback?.text?.trim();
       return rawText ? normalizeVoiceTranscript(rawText) : null;
     } catch (e) {
       return null;
     }
   }
 }
-
-try {
-  ffmpeg.setFfmpegPath(ffmpegPath.path);
-} catch(e) {}
 
 function prepareSpeechTextForClarity(text) {
   if (!text) return '';
@@ -129,119 +141,32 @@ function prepareSpeechTextForClarity(text) {
     .trim();
 }
 
-// ── ULTRA-REALISTIC STUDIO HD FEMALE VOICE NOTE (UR-PK-UZMANEURAL) ──
+// ── VOICE NOTE GENERATION (SAFE & ROBUST) ──
 export async function generateVoiceBuffer(text) {
-  if (!text || !text.trim()) return null;
+  if (!text || !text.trim() || !MsEdgeTTS || !ffmpeg) return null;
 
-  // Clean text specifically for natural, human-like voice synthesis
   let speechText = prepareSpeechTextForClarity(text);
-
-  // Cap to ~5 minutes of speech (approx 3,500 characters)
-  if (speechText.length > 3500) speechText = speechText.substring(0, 3500);
+  if (speechText.length > 2500) speechText = speechText.substring(0, 2500);
 
   const tempMp3 = path.resolve(`temp_${Date.now()}_${Math.random().toString(36).substring(7)}.mp3`);
   const tempOgg = path.resolve(`temp_${Date.now()}_${Math.random().toString(36).substring(7)}.ogg`);
 
-  // 1. PRIMARY: MsEdgeTTS Studio HD Female Voice (ur-PK-UzmaNeural)
   try {
     const isEnglishOnly = /^[a-zA-Z0-9\s.,!?'"()_@#$%&*+-]+$/.test(speechText) && !/(hai|hain|kya|aap|main|hoon|karein|batao|shukriya|assalam|walaikum|urdu)/i.test(speechText);
     const voiceName = isEnglishOnly ? 'en-IN-NeerjaNeural' : 'ur-PK-UzmaNeural';
 
-    // Split speechText into ~350 character natural sentence chunks
-    const rawParts = speechText.split(/(?<=[.!?،\n])/g);
-    const textChunks = [];
-    let cur = '';
-    for (const p of rawParts) {
-      if ((cur + ' ' + p).length < 350) {
-        cur = cur ? (cur + ' ' + p) : p;
-      } else {
-        if (cur) textChunks.push(cur.trim());
-        cur = p;
-      }
-    }
-    if (cur.trim()) textChunks.push(cur.trim());
-
     const tts = new MsEdgeTTS();
     await tts.setMetadata(voiceName, OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3);
-
-    const mp3Chunks = [];
-    for (const chunk of textChunks.slice(0, 15)) {
-      try {
-        const readable = tts.toStream(chunk, { rate: '-4%', pitch: '+0Hz' });
-        const stream = readable.audioStream || readable;
-        const cBufs = [];
-        for await (const c of stream) {
-          cBufs.push(c);
-        }
-        mp3Chunks.push(Buffer.concat(cBufs));
-      } catch (chunkErr) {
-        console.warn('[EdgeTTS chunk error]:', chunkErr.message);
-      }
+    const readable = tts.toStream(speechText);
+    const stream = readable.audioStream || readable;
+    const cBufs = [];
+    for await (const c of stream) {
+      cBufs.push(c);
     }
-    const mp3Buf = Buffer.concat(mp3Chunks);
+    const mp3Buf = Buffer.concat(cBufs);
 
     if (mp3Buf && mp3Buf.length > 500) {
       fs.writeFileSync(tempMp3, mp3Buf);
-      await new Promise((resolve, reject) => {
-        ffmpeg(tempMp3)
-          .toFormat('ogg')
-          .audioCodec('libopus')
-          .audioChannels(1)
-          .audioFrequency(48000)
-          .outputOptions(['-c:a libopus', '-b:a 96k', '-vbr on', '-application voip', '-af volume=1.2,highpass=f=75,lowpass=f=8500,equalizer=f=1400:t=q:w=1.2:g=2.5'])
-          .save(tempOgg)
-          .on('end', resolve)
-          .on('error', reject);
-      });
-
-      if (fs.existsSync(tempOgg)) {
-        const oggBuffer = fs.readFileSync(tempOgg);
-        try { fs.unlinkSync(tempMp3); fs.unlinkSync(tempOgg); } catch(e){}
-        return { buffer: oggBuffer, mimetype: 'audio/ogg; codecs=opus' };
-      }
-    }
-  } catch (edgeErr) {
-    console.warn('[MsEdgeTTS Notice, trying fallback]:', edgeErr.message);
-    try { if (fs.existsSync(tempMp3)) fs.unlinkSync(tempMp3); if (fs.existsSync(tempOgg)) fs.unlinkSync(tempOgg); } catch(e){}
-  }
-
-  // 2. FALLBACK: Parallel Google TTS Chunk Streamer
-  try {
-    const sentences = speechText.match(/[^.!?،\n]+[.!?،\n]*/g) || [speechText];
-    const chunks = [];
-    let currentChunk = '';
-
-    for (const s of sentences) {
-      if ((currentChunk + ' ' + s).length < 180) {
-        currentChunk = currentChunk ? (currentChunk + ' ' + s) : s;
-      } else {
-        if (currentChunk) chunks.push(currentChunk.trim());
-        currentChunk = s;
-      }
-    }
-    if (currentChunk.trim()) chunks.push(currentChunk.trim());
-
-    const isUrdu = /[\u0600-\u06FF]/.test(speechText) || /(hai|hain|kya|aap|main|hoon|karein|batao|shukriya|assalam|walaikum|urdu|website|kaise|python|zaban)/i.test(speechText);
-    const lang = isUrdu ? 'ur' : 'en';
-
-    const chunkPromises = chunks.slice(0, 15).map(async (chunk) => {
-      try {
-        const encoded = encodeURIComponent(chunk);
-        const url = `https://translate.google.com/translate_tts?ie=UTF-8&q=${encoded}&tl=${lang}&client=tw-ob`;
-        const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
-        if (res.ok) {
-          const ab = await res.arrayBuffer();
-          return Buffer.from(ab);
-        }
-      } catch (e) {}
-      return null;
-    });
-
-    const results = await Promise.all(chunkPromises);
-    const audioBuffers = results.filter(Boolean);
-    if (audioBuffers.length > 0) {
-      const combinedMp3 = Buffer.concat(audioBuffers);
-      fs.writeFileSync(tempMp3, combinedMp3);
       await new Promise((resolve, reject) => {
         ffmpeg(tempMp3)
           .toFormat('ogg')
@@ -253,15 +178,18 @@ export async function generateVoiceBuffer(text) {
           .on('end', resolve)
           .on('error', reject);
       });
+
       if (fs.existsSync(tempOgg)) {
         const oggBuffer = fs.readFileSync(tempOgg);
-        try { fs.unlinkSync(tempMp3); fs.unlinkSync(tempOgg); } catch(e){}
+        try { fs.unlinkSync(tempMp3); fs.unlinkSync(tempOgg); } catch (e) {}
         return { buffer: oggBuffer, mimetype: 'audio/ogg; codecs=opus' };
       }
     }
-  } catch (err) {
-    console.warn('[TTS Fallback Error]:', err.message);
-    try { if (fs.existsSync(tempMp3)) fs.unlinkSync(tempMp3); if (fs.existsSync(tempOgg)) fs.unlinkSync(tempOgg); } catch(e){}
+  } catch (edgeErr) {
+    console.warn('[Voice Gen Notice]:', edgeErr.message);
+  } finally {
+    try { if (fs.existsSync(tempMp3)) fs.unlinkSync(tempMp3); } catch (e) {}
+    try { if (fs.existsSync(tempOgg)) fs.unlinkSync(tempOgg); } catch (e) {}
   }
 
   return null;
@@ -299,13 +227,13 @@ export function cleanWhatsAppText(text) {
   if (!text) return '';
   return text
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/^#+\s+/gm, '') // Remove ###, ##, # headings
-    .replace(/\|/g, ' ') // Remove table pipes
-    .replace(/^[-]{3,}$/gm, '') // Remove --- dividers
-    .replace(/^[*\-]\s+/gm, '• ') // Replace list asterisks/hyphens with clean bullets
-    .replace(/\*\*\*([^\n*]+?)\*\*\*/g, '*$1*') // Convert ***text*** -> *text*
-    .replace(/\*\*([^\n*]+?)\*\*/g, '*$1*') // Convert **text** -> *text* (Native WhatsApp Bold)
-    .replace(/\*{2,}/g, '') // Remove any accidental double asterisks
+    .replace(/^#+\s+/gm, '')
+    .replace(/\|/g, ' ')
+    .replace(/^[-]{3,}$/gm, '')
+    .replace(/^[*\-]\s+/gm, '• ')
+    .replace(/\*\*\*([^\n*]+?)\*\*\*/g, '*$1*')
+    .replace(/\*\*([^\n*]+?)\*\*/g, '*$1*')
+    .replace(/\*{2,}/g, '')
     .replace(/\b(namaste|namaskar|dhanyawad|dhanyavaad|kripya|kripaya|mitra|samasya|adhyayan|sangrakshan|prashn|uttar|swagat)\b/gi, '')
     .replace(/(نمستے|نمسکار|دھنیہ واد|دھنیواد|کرپیا|سمسیا|ادھیان|سواگت)/g, '')
     .replace(/\n{3,}/g, '\n\n')
@@ -316,11 +244,11 @@ export function cleanWhatsAppText(text) {
 export async function generateResponse(chatId, userMessageText, apiKeyOverride = null) {
   const session = getChatSession(chatId);
 
-  const enrichedInstructions = SYSTEM_INSTRUCTIONS + '\n\nIMPORTANT CONVERSATIONAL & LANGUAGE RULES:\n- STRICT PURE PAKISTANI URDU ONLY: Speak and write in 100% natural, polite, everyday Pakistani Urdu (پاکستانی اردو یا آسان رومن اردو). NEVER use any Hindi words or Indian phrasing (strictly NO namaste, dhanyawad, kripya, mitra, samasya, adhyayan, etc.). Always use standard Pakistani polite words: Assalam o Alaikum, Khushamdeed, Shukriya, Janab, Maloomat, Tafseelat, Mukammal.\n- ACCURATE VOICE UNDERSTANDING: The user sends voice messages in Pakistani Urdu. If words like "Flutter / فلیڈر / فلٹر" are mentioned, they mean Flutter cross-platform mobile framework. If "Python / پائتھن" is mentioned, they mean Python programming. Answer with deep, crystal-clear 5-minute technical details.\n- CHATGPT-STYLE COMPLETE ANSWERS: Provide well-structured, comprehensive, point-by-point complete explanations.\n- NATIVE WHATSAPP BOLD: Use single asterisks like *Point Title:* (NEVER double asterisks **).\n- Use clean bullet points (•) and friendly emojis.\n- NEVER use "#", "|", or markdown tables in the reply.\n- NEVER cut off mid-sentence; provide complete, well-organized explanations from start to finish.\n- Business Pricing: Website (15,000 PKR), Mobile App (20,000 PKR), AI Chatbot (5,000 PKR).';
+  const enrichedInstructions = SYSTEM_INSTRUCTIONS + '\n\nIMPORTANT CONVERSATIONAL & LANGUAGE RULES:\n- STRICT PURE PAKISTANI URDU ONLY: Speak and write in 100% natural, polite, everyday Pakistani Urdu (پاکستانی اردو یا آسان رومن اردو). NEVER use any Hindi words or Indian phrasing. Always use standard Pakistani polite words: Assalam o Alaikum, Khushamdeed, Shukriya, Janab, Maloomat, Tafseelat, Mukammal.\n- ACCURATE VOICE UNDERSTANDING: The user sends voice messages in Pakistani Urdu. If words like "Flutter" are mentioned, they mean Flutter cross-platform mobile framework. If "Python" is mentioned, they mean Python programming. Answer with deep, crystal-clear technical details.\n- CHATGPT-STYLE COMPLETE ANSWERS: Provide well-structured, comprehensive, point-by-point complete explanations.\n- NATIVE WHATSAPP BOLD: Use single asterisks like *Point Title:* (NEVER double asterisks **).\n- Use clean bullet points (•) and friendly emojis.\n- NEVER use "#", "|", or markdown tables in the reply.\n- Business Pricing: Website (15,000 PKR), Mobile App (20,000 PKR), AI Chatbot (5,000 PKR).';
 
   // 1. Try Groq AI (Ultra-fast GPT-OSS 120B / 20B / Qwen 27B)
   if (groq) {
-    const groqModels = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.8-27b'];
+    const groqModels = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'qwen/qwen3.6-27b', 'groq/compound-mini'];
     for (const modelName of groqModels) {
       try {
         const messages = [
@@ -336,7 +264,7 @@ export async function generateResponse(chatId, userMessageText, apiKeyOverride =
           model: modelName,
           messages,
           temperature: 0.7,
-          max_tokens: 2500, // Full detailed up to 5-minute explanation
+          max_tokens: 1500,
         });
 
         let reply = completion.choices[0]?.message?.content?.trim();
@@ -361,7 +289,7 @@ export async function generateResponse(chatId, userMessageText, apiKeyOverride =
         const model = genAI.getGenerativeModel({
           model: modelName,
           systemInstruction: enrichedInstructions,
-          generationConfig: { temperature: 0.7, maxOutputTokens: 2500 }
+          generationConfig: { temperature: 0.7, maxOutputTokens: 1500 }
         });
         const chat = model.startChat({ history: session.history });
         const result = await chat.sendMessage(userMessageText);
