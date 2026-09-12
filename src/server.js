@@ -249,14 +249,18 @@ app.get('/api/stream', (req, res) => {
   });
 });
 
-// ── LIFETIME 24/7 SELF-PING & CLOUD KEEPALIVE ENGINE ──
-// Prevents cloud containers from sleeping, freezing, or idling out even after weeks of zero traffic
-setInterval(async () => {
-  try {
-    const activePort = process.env.PORT || CONFIG.port || 3000;
-    const res = await fetch(`http://127.0.0.1:${activePort}/status`).catch(() => null);
-  } catch (e) {}
-}, 4 * 60 * 1000); // Ping every 4 minutes
+// Cloud Keep-Alive (Prevents Render / Koyeb free tier from sleeping)
+const cloudUrl = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL;
+if (cloudUrl) {
+  setInterval(async () => {
+    try {
+      await fetch(`${cloudUrl}/api/status`);
+    } catch(e) {}
+  }, 9 * 60 * 1000); // Ping every 9 mins
+}
+
+// Local Keep-alive timer
+setInterval(() => {}, 1000 * 30);
 
 // Start Server
 const PORT = CONFIG.port;
