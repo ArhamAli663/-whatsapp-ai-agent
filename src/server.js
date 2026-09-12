@@ -263,11 +263,12 @@ if (cloudUrl) {
 setInterval(() => {}, 1000 * 30);
 
 // Start Server
-const PORT = CONFIG.port;
-const server = app.listen(PORT, () => {
+const PORT = process.env.PORT || CONFIG.port || 3000;
+const HOST = process.env.IP || '0.0.0.0';
+const server = app.listen(PORT, HOST, () => {
   console.log(`\n======================================================`);
   console.log(`  🚀 ARHAM'S WHATSAPP AI AGENT DASHBOARD RUNNING`);
-  console.log(`  🔗 Dashboard URL: http://localhost:${PORT}`);
+  console.log(`  🔗 Dashboard URL: http://${HOST}:${PORT}`);
   console.log(`  📱 Target Number: ${CONFIG.phoneNumber}`);
   console.log(`======================================================\n`);
 
